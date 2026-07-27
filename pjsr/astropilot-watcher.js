@@ -35,7 +35,11 @@ var WATCHER_VERSION = "0.0.1";
 //        snapshot, restore, export_container).
 // rev 3: run_process / run_process_icon now report outputs.executed (false when a process
 //        silently DECLINES, e.g. SPCC without a catalog or MGC without MARS coverage).
-var WATCHER_REVISION = 3;
+// rev 4: error messages normalized via errMessage() (PJSR throws raw strings whose .message
+//        is undefined, which was surfacing as "Error executing run_process: undefined");
+//        instantiateProcess now rejects known SCRIPT-menu tools (ImageSolver, etc.) with an
+//        actionable hint instead of a cryptic "not defined".
+var WATCHER_REVISION = 4;
 
 // Commands older than this are refused (dead-session leftovers). Matches the client's
 // stale threshold so a queued save/close never fires late with surprising side effects.
@@ -69,6 +73,17 @@ function listJsonFiles( dirPattern ) {
 
 function getTimestamp() {
    return (new Date()).toISOString();
+}
+
+// PJSR frequently throws raw strings for native core errors (e.g. a process failing in
+// executeOn), and a String has no `.message` — reading it yields undefined, which is how a
+// real failure was surfacing as "Error executing run_process: undefined". Normalize so the
+// actual text always survives into logs and result JSON.
+function errMessage( e ) {
+   if ( e == null ) return "unknown error";
+   if ( typeof e === "string" ) return e;
+   if ( e.message ) return e.message;
+   return String( e );
 }
 
 // ============================================================================
@@ -111,14 +126,26 @@ function resolveWindow( viewId ) {
    return aw;
 }
 
+// SCRIPT-menu tools shipped as PJSR scripts (loaded with #include) are NOT Process classes,
+// so `new <name>` throws "not defined" inside eval. Map the ones assistants reach for most to
+// an actionable hint instead of a cryptic failure.
+var KNOWN_SCRIPTS = {
+   ImageSolver:          "plate solving is done by the 'plate_solve' tool (ASTAP), not run_process/get_process_parameters",
+   SubframeSelector:     "run it from the SCRIPT menu; it is not a scriptable Process",
+   MosaicByCoordinates:  "PJSR script, not a Process",
+   AnnotateImage:        "PJSR script, not a Process"
+};
+
 function instantiateProcess( processId ) {
    if ( !/^[A-Za-z_][A-Za-z0-9_]*$/.test( processId || "" ) )
       throw new Error( "Invalid process id: " + processId );
+   if ( KNOWN_SCRIPTS.hasOwnProperty( processId ) )
+      throw new Error( processId + " is a PixInsight script, not a process — " + KNOWN_SCRIPTS[processId] );
    var P;
    try {
       P = eval( "new " + processId + ";" );
    } catch ( e ) {
-      throw new Error( "Unknown process: " + processId + " (" + e.message + ")" );
+      throw new Error( "Unknown process: " + processId + " (" + errMessage( e ) + ")" );
    }
    return P;
 }
@@ -308,7 +335,7 @@ function handleRunScript( command ) {
                outputs: { returnValue: String( result !== undefined ? result : "Script executed." ) },
                message: "Script executed successfully" };
    } catch ( e ) {
-      throw new Error( "Script error: " + e.message );
+      throw new Error( "Script error: " + errMessage( e ) );
    }
 }
 
@@ -503,11 +530,12 @@ function processNextCommand() {
          outputs: handlerResult.outputs || {}, message: handlerResult.message || ""
       };
    } catch ( e ) {
-      console.criticalln( "[AstroPilot] Error executing " + command.tool + ": " + e.message );
+      var msg = errMessage( e );
+      console.criticalln( "[AstroPilot] Error executing " + command.tool + ": " + msg );
       resultObj = {
          id: command.id, timestamp: getTimestamp(), status: "error",
          process: command.process, duration_ms: Date.now() - startTime,
-         error: { message: e.message, type: e.name || "Error", stack: e.stack || "" }
+         error: { message: msg, type: (e && e.name) || "Error", stack: (e && e.stack) || "" }
       };
    }
 
