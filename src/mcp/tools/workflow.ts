@@ -154,13 +154,19 @@ export const processOsc: ToolDef = {
       await run('NXT(OIII)', proc('NoiseXTerminator', oiiiId));
       await run('LinearFit OIII->Ha', proc('LinearFit', oiiiId, { referenceViewId: haId }));
       await run('stretch channels', toTR(backend.send('run_script', 'run_script', { code: stretchMonoScript([haId, oiiiId], backgroundTarget) })));
-      const pal = (args.palette as string) ?? 'HOO';
-      if (pal === 'natural') return jsonResult({ ok: false, steps, error: 'natural palette is broadband-only' });
+      let pal = (args.palette as string) ?? 'HOO';
+      if (pal === 'natural') pal = 'HOO'; // HOO is the natural duoband palette
       // PixInsight view ids allow only [A-Za-z0-9_] and can't start with a digit, so "synthetic-SHO"
       // must be sanitized or the created view id won't match what we later look up.
       const combined = `${pal.replace(/[^A-Za-z0-9_]/g, '_')}_result`;
       const ap = await run(`apply_palette:${pal}`, applyPalette.handler(backend, { palette: pal, ha: haId, oiii: oiiiId, newImageId: combined }));
       if (isErr(ap)) return jsonResult({ ok: false, steps, error: `palette ${pal} failed` });
+      // Final background flatten on the combined color image. Per-channel GC leaves a residual
+      // color gradient (measured: strong in OIII → G+B) that only shows after combine; a lighter-
+      // protection pass on the result flattens it without eating the compact nebula.
+      await run('final GradientCorrection', proc('GradientCorrection', combined, {
+        protection: true, protectionThreshold: 0.05, protectionAmount: 0.3, scale: 5, smoothness: 0.5,
+      }));
       colorView = combined;
       preStretched = true; // channels were already stretched before combine
     }
