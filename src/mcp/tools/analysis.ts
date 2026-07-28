@@ -221,13 +221,44 @@ export const plateSolve: ToolDef = {
       };
     }
 
-    // Re-open the WCS-updated FITS so PixInsight builds the astrometric solution for SPCC.
+    // Re-open the WCS-updated FITS to build the astrometric solution, then copy that solution
+    // back onto the ORIGINAL view and discard the temp copy — so the whole pipeline keeps
+    // running on one view. Previously the solution was left on the reopened copy and its id
+    // returned, which made it easy to run SPCC/SPFC/MGC on the un-solved original and hit
+    // "no valid astrometric solution". Falls back to the reopened copy if the transfer fails.
     let solvedViewId = viewId;
+    let astrometryOn: 'original-view' | 'reopened-copy' | 'temp-fits-only' = 'temp-fits-only';
     if (args.reopen !== false) {
       const opened = await backend.send('open_image', '__internal__', { filePath: fits });
-      const id = (opened.outputs as { id?: unknown } | undefined)?.id;
-      if (typeof id === 'string') solvedViewId = id;
+      const reopenedId = (opened.outputs as { id?: unknown } | undefined)?.id;
+      if (typeof reopenedId === 'string') {
+        const copyCode = `(function(){
+  var src = ImageWindow.windowById(${JSON.stringify(reopenedId)});
+  var dst = ImageWindow.windowById(${JSON.stringify(viewId)});
+  if (src.isNull) return JSON.stringify({ ok:false, reason:"reopened window not found" });
+  if (dst.isNull) return JSON.stringify({ ok:false, reason:"original view not found" });
+  try { dst.copyAstrometricSolution( src ); } catch ( e ) { return JSON.stringify({ ok:false, reason:String(e) }); }
+  var ok = false; try { ok = dst.hasAstrometricSolution; } catch ( e ) {}
+  if ( ok ) { try { src.forceClose(); } catch ( e ) {} }
+  return JSON.stringify({ ok: ok });
+})()`;
+        const copy = scriptJson(await backend.send('run_script', '__internal__', { code: copyCode }));
+        if (!('error' in copy) && (copy as { ok?: unknown }).ok === true) {
+          solvedViewId = viewId; // solution now lives on the original view; temp copy closed
+          astrometryOn = 'original-view';
+        } else {
+          solvedViewId = reopenedId; // transfer failed → keep the solution on the reopened copy
+          astrometryOn = 'reopened-copy';
+        }
+      }
     }
+
+    const note =
+      astrometryOn === 'original-view'
+        ? `WCS solution copied onto "${solvedViewId}" (the original view). Continue the pipeline (SPCC/SPFC/MGC/BXT/…) on it directly.`
+        : astrometryOn === 'reopened-copy'
+          ? `Could not transfer the solution to the original view; it lives on the reopened copy "${solvedViewId}". Run SPCC/SPFC/MGC on that view.`
+          : 'WCS written into the temp FITS; not re-opened.';
 
     return jsonResult({
       solved: true,
@@ -237,11 +268,9 @@ export const plateSolve: ToolDef = {
       scaleArcsecPerPx: result.scaleArcsecPerPx,
       rotationDeg: result.rotationDeg,
       solvedViewId,
+      astrometryOn,
       hints,
-      note:
-        args.reopen === false
-          ? 'WCS written into the temp FITS; not re-opened.'
-          : `WCS imported into "${solvedViewId}". Run SPCC/SPFC/MGC on that view (they read the astrometric solution).`,
+      note,
     });
   },
 };
