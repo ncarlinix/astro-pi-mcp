@@ -62,9 +62,12 @@ function stretchSharedScript(haId: string, oiiiId: string, backgroundTarget: num
     function MTF(m,x){ if(x<=0)return 0; if(x>=1)return 1; return ((m-1)*x)/(((2*m-1)*x)-m); }
     var ha=View.viewById(${JSON.stringify(haId)}), oi=View.viewById(${JSON.stringify(oiiiId)});
     if(ha.isNull||oi.isNull) return JSON.stringify({error:"channel missing"});
-    var img=ha.image; img.resetSelections(); var md=img.median(), mn=img.MAD()*1.4826; var c0=md-2.8*mn; if(c0<0)c0=0; var xx=md-c0; if(xx<0)xx=0; var m=MTF(${B},xx); img.resetSelections();
-    var H=new HistogramTransformation; H.H=[[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[c0,m,1,0,1],[0,0.5,1,0,1]];
-    H.executeOn(ha); H.executeOn(oi);
+    // Shared MIDTONE from Ha (preserves the Ha:OIII signal dominance -> red), but PER-CHANNEL
+    // black point (clips each channel's own background -> backgrounds align -> neutral, no cast).
+    var hi=ha.image; hi.resetSelections(); var hmd=hi.median(), hmn=hi.MAD()*1.4826; var hc0=hmd-2.8*hmn; if(hc0<0)hc0=0; var hxx=hmd-hc0; if(hxx<0)hxx=0; var m=MTF(${B},hxx); hi.resetSelections();
+    var oimg=oi.image; oimg.resetSelections(); var omd=oimg.median(), omn=oimg.MAD()*1.4826; var oc0=omd-2.8*omn; if(oc0<0)oc0=0; oimg.resetSelections();
+    var Hh=new HistogramTransformation; Hh.H=[[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[hc0,m,1,0,1],[0,0.5,1,0,1]]; Hh.executeOn(ha);
+    var Ho=new HistogramTransformation; Ho.H=[[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[oc0,m,1,0,1],[0,0.5,1,0,1]]; Ho.executeOn(oi);
     return JSON.stringify({ok:true});
   })()`;
 }
@@ -195,6 +198,9 @@ export const processOsc: ToolDef = {
         const ap = await run(`apply_palette:${pal}`, applyPalette.handler(backend, { palette: pal, ha: haId, oiii: oiiiId, newImageId: combined }));
         if (isErr(ap)) return jsonResult({ ok: false, steps, error: `palette ${pal} failed` });
         await run('SCNR (green)', proc('SCNR', combined));
+        // Per-channel black point leaves a mild Ha-red background tint; BN neutralizes it (the
+        // frame has sky in the corners) without harming the red nebula (verified on Dragons).
+        await run('BackgroundNeutralization', proc('BackgroundNeutralization', combined));
       } else {
         // Compact (e.g. Helix): equalize channels (LinearFit + per-channel stretch) then flatten
         // aggressively (ABE deg4 fits the wavy residual; BN removes the cast) — valid because the
