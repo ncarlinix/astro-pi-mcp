@@ -15,6 +15,7 @@ import { equipmentTools } from './equipment.js';
 import { recipeTools } from './recipes.js';
 import { preferenceTools } from './preferences.js';
 import { planningTools } from './planning.js';
+import { workflowTools } from './workflow.js';
 import { evaluationTools } from './evaluate.js';
 import { compareTools } from './compare.js';
 import { maskTools } from './masks.js';
@@ -43,6 +44,7 @@ export const allTools: ToolDef[] = [
   ...preferenceTools, // S18 preferences/memory
   ...backendTools, // S19 plugin backends
   ...planningTools, // S20 session planning
+  ...workflowTools, // S21 end-to-end OSC orchestrator (data-aware palette)
 ];
 
 /** Register every tool on an McpServer, binding each handler to the given backend. */
