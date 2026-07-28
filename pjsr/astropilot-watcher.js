@@ -39,7 +39,10 @@ var WATCHER_VERSION = "0.0.1";
 //        is undefined, which was surfacing as "Error executing run_process: undefined");
 //        instantiateProcess now rejects known SCRIPT-menu tools (ImageSolver, etc.) with an
 //        actionable hint instead of a cryptic "not defined".
-var WATCHER_REVISION = 4;
+// rev 5: shutdown latch — the shutdown file / Ctrl+F11 now reliably stops the watcher. The
+//        previous inner-loop break only exited the sleep loop while shouldShutdown() had
+//        already consumed the file, so the watcher polled on forever and locked the UI.
+var WATCHER_REVISION = 5;
 
 // Commands older than this are refused (dead-session leftovers). Matches the client's
 // stale threshold so a queued save/close never fires late with surprising side effects.
@@ -570,10 +573,18 @@ function runWatcher() {
    console.show();
 
    var SHUTDOWN_FILE = BRIDGE_DIR + "/shutdown";
+   // Persistent latch: shouldShutdown() consumes (removes) the shutdown file, but it is called
+   // from the inner sleep loops where a `break` only exits the INNER loop. Without a latch the
+   // outer loop's top-check would then find the file already gone and keep polling forever
+   // (the shutdown file appeared "consumed" but never stopped the watcher). Latching means any
+   // detection — inner or outer — permanently trips shutdown so the outer loop reliably exits.
+   var shuttingDown = false;
    function shouldShutdown() {
-      if ( console.abortRequested ) return true;
+      if ( shuttingDown ) return true;
+      if ( console.abortRequested ) { shuttingDown = true; return true; }
       if ( File.exists( SHUTDOWN_FILE ) ) {
          try { File.remove( SHUTDOWN_FILE ); } catch ( e ) {}
+         shuttingDown = true;
          return true;
       }
       return false;
