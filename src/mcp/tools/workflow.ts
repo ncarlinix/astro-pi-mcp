@@ -163,13 +163,17 @@ export const processOsc: ToolDef = {
     let unlinked = false;
     let preStretched = false; // duoband path stretches channels before combining
     const gc = { protection: true, protectionThreshold: 0.1, protectionAmount: 0.5, scale: 5, smoothness: 0.4 };
+    // BXT: push nonstellar high for nebula detail (BXT rarely rings), keep star sharpening low to
+    // avoid dark rings/over-tight stars. This install's default is 0.5/0.5 — too sharp on stars,
+    // too soft on nebula. (RC Astro / community consensus; repo PROCESSING_GUIDE.)
+    const bxt = { sharpen_stars: 0.18, sharpen_nonstellar: 0.85, auto_nonstellar_psf: true };
 
     if (dataType === 'broadband') {
       // Gradient (linear) → natural color via SPCC → BXT/NXT
       await run('GradientCorrection', proc('GradientCorrection', workView, gc));
       const spcc = await run('SPCC', proc('SpectrophotometricColorCalibration', workView));
       if (isErr(spcc) || /"executed":\s*false/.test(textOf(spcc))) unlinked = true; // fall back to unlinked stretch
-      await run('BXT', proc('BlurXTerminator', colorView));
+      await run('BXT', proc('BlurXTerminator', colorView, bxt));
       await run('NXT', proc('NoiseXTerminator', colorView));
     } else {
       // Duoband best practice: extract → PER-CHANNEL gradient + noise (gradients transfer on
@@ -180,8 +184,8 @@ export const processOsc: ToolDef = {
       const haId = `${workView}_Ha`, oiiiId = `${workView}_OIII`;
       await run('GC(Ha)', proc('GradientCorrection', haId, gc));
       await run('GC(OIII)', proc('GradientCorrection', oiiiId, gc));
-      await run('BXT(Ha)', proc('BlurXTerminator', haId));
-      await run('BXT(OIII)', proc('BlurXTerminator', oiiiId));
+      await run('BXT(Ha)', proc('BlurXTerminator', haId, bxt));
+      await run('BXT(OIII)', proc('BlurXTerminator', oiiiId, bxt));
       await run('NXT(Ha)', proc('NoiseXTerminator', haId));
       await run('NXT(OIII)', proc('NoiseXTerminator', oiiiId));
       let pal = (args.palette as string) ?? 'HOO';
@@ -214,6 +218,9 @@ export const processOsc: ToolDef = {
         }));
         await run('BackgroundNeutralization', proc('BackgroundNeutralization', combined));
       }
+      // Final denoise on the COMBINED RGB: NXT separates luma/chroma only with all 3 channels,
+      // so a pass here cleans residual chroma noise that per-channel NXT can't (repo mono-rgb doc).
+      await run('final NXT (chroma)', proc('NoiseXTerminator', combined));
       colorView = combined;
       preStretched = true; // channels were already stretched before combine
     }
