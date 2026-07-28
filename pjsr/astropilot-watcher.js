@@ -568,7 +568,7 @@ function runWatcher() {
    console.noteln( "===========================================" );
    console.noteln( "  AstroPilot Watcher v" + WATCHER_VERSION + " (rev " + WATCHER_REVISION + ")" );
    console.noteln( "  Bridge: " + BRIDGE_DIR );
-   console.noteln( "  Idle poll ~" + POLL_INTERVAL_MS + "ms  |  click 'Stop Watcher' or run stop_watcher to end" );
+   console.noteln( "  Idle poll ~" + POLL_INTERVAL_MS + "ms  |  Ctrl+F11 to abort" );
    console.noteln( "===========================================" );
    console.show();
 
@@ -590,65 +590,29 @@ function runWatcher() {
       return false;
    }
 
-   // Event-driven loop: a periodic Timer owned by a MODELESS dialog. runWatcher() returns
-   // immediately after dlg.show(), so PixInsight is NOT "executing a script" and its UI stays
-   // fully interactive (zoom, run processes) while the Timer polls the bridge in the background.
-   // The old foreground for(;;) loop held the engine and locked the UI regardless of how often
-   // processEvents() was called. A global reference keeps the dialog + timer alive after return.
-   var dlg = new Dialog;
-   dlg.windowTitle = "AstroPilot Watcher";
-   dlg.commandCount = 0;
-
-   var status = new Label( dlg );
-   status.text = "Watcher running — PixInsight stays usable. Polling for AstroPilot commands.";
-   status.wordWrapping = true;
-   status.minWidth = 340;
-   status.margin = 4;
-
-   var stopButton = new PushButton( dlg );
-   stopButton.text = "Stop Watcher";
-   stopButton.toolTip = "Stop polling and free PixInsight. Re-run this script (F9) to resume.";
-   stopButton.onClick = function() { shuttingDown = true; };
-
-   var row = new HorizontalSizer;
-   row.addStretch();
-   row.add( stopButton );
-
-   dlg.sizer = new VerticalSizer;
-   dlg.sizer.margin = 8;
-   dlg.sizer.spacing = 8;
-   dlg.sizer.add( status );
-   dlg.sizer.add( row );
-   dlg.adjustToContents();
-
-   var timer = new Timer;
-   timer.interval = POLL_INTERVAL_MS / 1000;   // seconds
-   timer.periodic = true;
-   timer.onTimeout = function() {
+   var commandCount = 0;
+   for ( ;; ) {
+      CoreApplication.processEvents();
       if ( shouldShutdown() ) {
-         timer.stop();
-         console.noteln( "[AstroPilot] Stopped. Processed " + dlg.commandCount + " command(s)." );
-         status.text = "Watcher stopped — safe to close. Re-run (F9) to resume.";
-         try { dlg.cancel(); } catch ( e ) {}
-         return;
+         console.warningln( "[AstroPilot] Shutdown requested. Stopping." );
+         break;
       }
-      // Drain a small burst per tick so queued commands clear quickly. processNextCommand()
-      // handles at most one command and returns false when the queue is empty.
-      for ( var n = 0; n < 8; ++n ) {
-         if ( !processNextCommand() ) break;
-         dlg.commandCount++;
+      if ( processNextCommand() ) {
+         commandCount++;
+         for ( var y = 0; y < 20; ++y ) {
+            CoreApplication.processEvents();
+            System.msleep( 20 );
+            if ( shouldShutdown() ) break;
+         }
+      } else {
+         for ( var i = 0; i < 25; ++i ) {
+            System.msleep( 20 );
+            CoreApplication.processEvents();
+            if ( shouldShutdown() ) break;
+         }
       }
-      status.text = "Watcher running — " + dlg.commandCount + " command(s) processed. PixInsight stays usable.";
-   };
-
-   dlg.onClose = function() { shuttingDown = true; timer.stop(); };
-
-   // Keep alive after the script returns so GC does not reap the modeless dialog + timer.
-   __astropilotWatcher = { dialog: dlg, timer: timer };
-
-   timer.start();
-   dlg.show();   // MODELESS — returns immediately; UI stays interactive while the Timer polls
+   }
+   console.noteln( "[AstroPilot] Stopped. Processed " + commandCount + " command(s)." );
 }
 
-var __astropilotWatcher = null;
 runWatcher();
