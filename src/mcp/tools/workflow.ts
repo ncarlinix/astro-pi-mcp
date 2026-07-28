@@ -161,12 +161,15 @@ export const processOsc: ToolDef = {
       const combined = `${pal.replace(/[^A-Za-z0-9_]/g, '_')}_result`;
       const ap = await run(`apply_palette:${pal}`, applyPalette.handler(backend, { palette: pal, ha: haId, oiii: oiiiId, newImageId: combined }));
       if (isErr(ap)) return jsonResult({ ok: false, steps, error: `palette ${pal} failed` });
-      // Final background flatten on the combined color image. Per-channel GC leaves a residual
-      // color gradient (measured: strong in OIII → G+B) that only shows after combine; a lighter-
-      // protection pass on the result flattens it without eating the compact nebula.
-      await run('final GradientCorrection', proc('GradientCorrection', combined, {
-        protection: true, protectionThreshold: 0.05, protectionAmount: 0.3, scale: 5, smoothness: 0.5,
+      // Final background flatten. The residual after per-channel GC is WAVY/non-linear (bright
+      // edges, darker center — vignette/illumination residual), which plane-based correctors
+      // (GradientCorrection, ABE deg1) can't model. ABE degree 4 fits that curved surface; then
+      // BackgroundNeutralization removes the slight blue-green cast so saturation doesn't amplify
+      // it into visible color mottling. Both on the compact-nebula frame, so samples stay on sky.
+      await run('ABE deg4 flatten', proc('AutomaticBackgroundExtractor', combined, {
+        polyDegree: 4, targetCorrection: 1, replaceTarget: true, discardModel: true,
       }));
+      await run('BackgroundNeutralization', proc('BackgroundNeutralization', combined));
       colorView = combined;
       preStretched = true; // channels were already stretched before combine
     }
