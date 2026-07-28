@@ -35,6 +35,42 @@ function finishScript(viewId: string, backgroundTarget: number, saturation: numb
 })()`;
 }
 
+/** Per-channel mono auto-stretch to a background target — used on Ha/OIII before palette
+ *  combination (Foraxx and friends operate on nonlinear channels). */
+function stretchMonoScript(ids: string[], backgroundTarget: number): string {
+  const B = Math.max(0.03, Math.min(0.3, backgroundTarget)).toFixed(3);
+  return `(function(){
+    function MTF(m,x){ if(x<=0)return 0; if(x>=1)return 1; return ((m-1)*x)/(((2*m-1)*x)-m); }
+    var ids=${JSON.stringify(ids)}; var done=[];
+    for(var k=0;k<ids.length;k++){
+      var v=View.viewById(ids[k]); if(v.isNull) continue;
+      var img=v.image; img.resetSelections();
+      var md=img.median(), mn=img.MAD()*1.4826; var c0=md-2.8*mn; if(c0<0)c0=0; var xx=md-c0; if(xx<0)xx=0; var m=MTF(${B},xx);
+      var H=new HistogramTransformation; H.H=[[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[c0,m,1,0,1],[0,0.5,1,0,1]]; H.executeOn(v); img.resetSelections();
+      done.push(ids[k]);
+    }
+    return JSON.stringify({stretched:done});
+  })()`;
+}
+
+/** Saturation-only finish for the duoband path (channels are already stretched before combine). */
+function saturateScript(viewId: string, saturation: number): string {
+  const midY = (0.5 + 0.25 * Math.max(0, Math.min(1, saturation))).toFixed(3);
+  return `(function(){
+    var v=View.viewById(${JSON.stringify(viewId)}); if(v.isNull) return JSON.stringify({error:"view not found"});
+    try{ var Cs=new CurvesTransformation; Cs.S=[[0,0],[0.5,${midY}],[1,1]]; Cs.executeOn(v); }catch(e){}
+    return JSON.stringify({ok:true});
+  })()`;
+}
+
+/** Adapt a raw bridge run_script result into a ToolResult for the step logger. */
+function toTR(p: Promise<{ status: string; outputs?: unknown; error?: unknown }>): Promise<ToolResult> {
+  return p.then((br) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(br.outputs ?? br.error ?? {}) }],
+    isError: br.status === 'error',
+  }));
+}
+
 export const processOsc: ToolDef = {
   name: 'process_osc',
   description:
@@ -48,9 +84,9 @@ export const processOsc: ToolDef = {
     view: z.string().optional().describe('Source view id; omit for the active image'),
     dataType: z.enum(['broadband', 'duoband']).describe('broadband (RGB) or duoband (dual narrowband OSC)'),
     palette: z
-      .enum(['natural', 'HOO', 'synthetic-SHO'])
+      .enum(['natural', 'HOO', 'synthetic-SHO', 'foraxx'])
       .optional()
-      .describe('duoband only: HOO (default) or synthetic-SHO (artistic, no real SII). Ignored for broadband.'),
+      .describe('duoband: HOO (default), foraxx (dynamic), or synthetic-SHO (artistic). Ignored for broadband.'),
     starHandling: z.enum(['keep', 'reduce', 'starless']).optional().describe('Default keep'),
     saturation: z.number().min(0).max(1).optional().describe('Saturation boost 0..1 (default 0.5)'),
     backgroundTarget: z.number().min(0.03).max(0.3).optional().describe('Stretch background level (default 0.10)'),
@@ -91,29 +127,33 @@ export const processOsc: ToolDef = {
       }
     }
 
-    // 2) GradientCorrection (linear, before color)
-    await run('GradientCorrection', proc('GradientCorrection', workView, {
-      protection: true, protectionThreshold: 0.1, protectionAmount: 0.5, scale: 5, smoothness: 0.4,
-    }));
-
     let colorView = workView;
     let unlinked = false;
+    let preStretched = false; // duoband path stretches channels before combining
+    const gc = { protection: true, protectionThreshold: 0.1, protectionAmount: 0.5, scale: 5, smoothness: 0.4 };
 
     if (dataType === 'broadband') {
-      // 3b) Natural color via SPCC
+      // Gradient (linear) → natural color via SPCC → BXT/NXT
+      await run('GradientCorrection', proc('GradientCorrection', workView, gc));
       const spcc = await run('SPCC', proc('SpectrophotometricColorCalibration', workView));
       if (isErr(spcc) || /"executed":\s*false/.test(textOf(spcc))) unlinked = true; // fall back to unlinked stretch
       await run('BXT', proc('BlurXTerminator', colorView));
       await run('NXT', proc('NoiseXTerminator', colorView));
     } else {
-      // 3d) Duoband: extract Ha/OIII, per-channel BXT/NXT, combine via palette
+      // Duoband best practice: extract → PER-CHANNEL gradient + noise (gradients transfer on
+      // combine) → LinearFit OIII to Ha → stretch each channel → THEN palette-combine (Foraxx
+      // and the neutralized look need nonlinear channels).
       const ex = await run('extract_duoband', extractDuoband.handler(backend, { view: workView }));
       if (isErr(ex)) return jsonResult({ ok: false, steps, error: 'duoband extraction failed' });
       const haId = `${workView}_Ha`, oiiiId = `${workView}_OIII`;
+      await run('GC(Ha)', proc('GradientCorrection', haId, gc));
+      await run('GC(OIII)', proc('GradientCorrection', oiiiId, gc));
       await run('BXT(Ha)', proc('BlurXTerminator', haId));
       await run('BXT(OIII)', proc('BlurXTerminator', oiiiId));
       await run('NXT(Ha)', proc('NoiseXTerminator', haId));
       await run('NXT(OIII)', proc('NoiseXTerminator', oiiiId));
+      await run('LinearFit OIII->Ha', proc('LinearFit', oiiiId, { referenceViewId: haId }));
+      await run('stretch channels', toTR(backend.send('run_script', 'run_script', { code: stretchMonoScript([haId, oiiiId], backgroundTarget) })));
       const pal = (args.palette as string) ?? 'HOO';
       if (pal === 'natural') return jsonResult({ ok: false, steps, error: 'natural palette is broadband-only' });
       // PixInsight view ids allow only [A-Za-z0-9_] and can't start with a digit, so "synthetic-SHO"
@@ -122,7 +162,7 @@ export const processOsc: ToolDef = {
       const ap = await run(`apply_palette:${pal}`, applyPalette.handler(backend, { palette: pal, ha: haId, oiii: oiiiId, newImageId: combined }));
       if (isErr(ap)) return jsonResult({ ok: false, steps, error: `palette ${pal} failed` });
       colorView = combined;
-      unlinked = true; // narrowband palettes carry a strong cast; a per-channel stretch neutralizes it
+      preStretched = true; // channels were already stretched before combine
     }
 
     // 4) Star handling (split before stretch when reducing/removing)
@@ -132,10 +172,12 @@ export const processOsc: ToolDef = {
       if (!isErr(sx)) starsView = `${colorView}_stars`;
     }
 
-    // 5) Stretch + saturation + SCNR on the (starless, if split) nebula
-    await run('stretch+saturation', backend.send('run_script', 'run_script', {
-      code: finishScript(colorView, backgroundTarget, saturation, unlinked, dataType === 'broadband'),
-    }).then((br) => ({ content: [{ type: 'text' as const, text: JSON.stringify(br.outputs ?? br.error ?? {}) }], isError: br.status === 'error' })));
+    // 5) Finish on the (starless, if split) nebula. Broadband: stretch + saturation + SCNR.
+    //    Duoband: channels were already stretched before combine, so saturation only.
+    const finishCode = preStretched
+      ? saturateScript(colorView, saturation)
+      : finishScript(colorView, backgroundTarget, saturation, unlinked, dataType === 'broadband');
+    await run('finish', toTR(backend.send('run_script', 'run_script', { code: finishCode })));
 
     // 6) Recombine stars for 'reduce' (dim + screen); 'starless' leaves them off
     if (starHandling === 'reduce' && starsView) {

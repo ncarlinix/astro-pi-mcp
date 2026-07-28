@@ -82,15 +82,23 @@ export const PALETTES: Palette[] = [
   },
   {
     id: 'foraxx',
-    name: 'Foraxx (dynamic)',
+    name: 'Foraxx (dynamic, duoband)',
     description:
-      'Dynamic Ha/OIII palette. Its published PixelMath uses specific coefficients — not ' +
-      'hard-coded here to avoid fabricating expressions.',
+      'Dynamic, data-driven Ha/OIII palette (SII substituted by Ha for duoband). MUST be applied ' +
+      'to STRETCHED (nonlinear) channels — the blend operates on 0..1 tonal values.',
     requires: ['Ha', 'OIII'],
     scientificWhenReal: false,
     synthetic: true,
-    build: () => null,
-    note: 'See docs/workflows (SHO/duoband) for the authoritative Foraxx expression, then apply via run_process("PixelMath", …).',
+    // Authoritative Foraxx expression (thecoldestnights.com / ForaxX), duoband form with SII→Ha:
+    //   R = Ha ;  G = ((O*H)^~(O*H))*H + ~((O*H)^~(O*H))*O ;  B = OIII
+    // (~x = 1-x, ^ = power in PixInsight PixelMath.)
+    build: (ch) => {
+      if (!has(ch, ['Ha', 'OIII'])) return null;
+      const H = ch.Ha!, O = ch.OIII!;
+      const mix = `(${O}*${H})^~(${O}*${H})`;
+      return { R: H, G: `(${mix})*${H} + ~(${mix})*${O}`, B: O };
+    },
+    note: 'Duoband Foraxx (SII=Ha). Apply on STRETCHED Ha/OIII. Source: thecoldestnights.com (ForaxX).',
   },
 ];
 
