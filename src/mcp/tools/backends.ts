@@ -21,4 +21,30 @@ export const listBackendsTool: ToolDef = {
   },
 };
 
-export const backendTools: ToolDef[] = [listBackendsTool];
+export const stopWatcherTool: ToolDef = {
+  name: 'stop_watcher',
+  description:
+    'Cleanly stop the PixInsight PJSR watcher so PixInsight becomes interactive again (zoom, ' +
+    'run processes by hand). While the watcher polls it holds the engine and the UI is locked. ' +
+    'Call this when finishing an AstroPilot session, or whenever the user wants PixInsight back. ' +
+    'Writes the shutdown sentinel the watcher polls for; to resume, re-run astropilot-watcher.js ' +
+    '(F9). Handy on macOS where Ctrl+F11 (the manual abort) is intercepted by the OS.',
+  inputSchema: {},
+  handler: async (backend) => {
+    if (typeof backend.stopWatcher !== 'function') {
+      return {
+        content: [{ type: 'text', text: `Backend "${backend.id}" has no stoppable watcher.` }],
+        isError: true,
+      };
+    }
+    const stopped = await backend.stopWatcher();
+    return jsonResult({
+      stopped,
+      message: stopped
+        ? 'Watcher stopped — PixInsight is interactive again. Re-run astropilot-watcher.js (F9) to resume.'
+        : 'Shutdown signal sent but the watcher still appears alive; it may stop shortly, or use the Process Console abort button.',
+    });
+  },
+};
+
+export const backendTools: ToolDef[] = [listBackendsTool, stopWatcherTool];

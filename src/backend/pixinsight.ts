@@ -25,6 +25,11 @@ export class PixInsightBackend implements ProcessingBackend {
     return this.client.isWatcherAlive();
   }
 
+  /** Stop the in-PixInsight PJSR watcher (writes the shutdown sentinel it polls for). */
+  stopWatcher(timeoutMs?: number): Promise<boolean> {
+    return this.client.stopWatcher(timeoutMs);
+  }
+
   send(
     tool: string,
     process: string,

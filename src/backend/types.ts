@@ -22,6 +22,13 @@ export interface ProcessingBackend {
     parameters: Record<string, unknown>,
     options?: SendOptions,
   ): Promise<BridgeResult>;
+
+  /**
+   * Cleanly stop the backend's in-app agent (for PixInsight: the PJSR watcher), freeing the
+   * app's UI. Optional — backends without a long-running in-app agent may omit it. Returns
+   * true if the agent stopped within the timeout.
+   */
+  stopWatcher?(timeoutMs?: number): Promise<boolean>;
 }
 
 export interface SendOptions {

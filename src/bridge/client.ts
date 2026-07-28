@@ -51,6 +51,7 @@ const MALFORMED_GRACE_MS = 2000;
  */
 export class BridgeClient {
   private config: BridgeConfig;
+  private bridgeDir: string;
   private commandsDir: string;
   private resultsDir: string;
   private logsDir: string;
@@ -59,10 +60,10 @@ export class BridgeClient {
 
   constructor(config?: Partial<BridgeConfig>, logger: BridgeLogger = noopLogger) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    const bridgeDir = expandHome(this.config.bridgeDir);
-    this.commandsDir = join(bridgeDir, 'commands');
-    this.resultsDir = join(bridgeDir, 'results');
-    this.logsDir = join(bridgeDir, 'logs');
+    this.bridgeDir = expandHome(this.config.bridgeDir);
+    this.commandsDir = join(this.bridgeDir, 'commands');
+    this.resultsDir = join(this.bridgeDir, 'results');
+    this.logsDir = join(this.bridgeDir, 'logs');
     this.log = logger;
   }
 
@@ -266,6 +267,35 @@ export class BridgeClient {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Stop the in-PixInsight watcher by writing the shutdown sentinel it polls for, then wait
+   * until it stops responding. The watcher deletes the sentinel and latches shutdown (rev 5+),
+   * so a single write reliably stops it. Returns true if it stopped within the timeout.
+   * Frees PixInsight's UI without the user needing Ctrl+F11 (which macOS intercepts as F11).
+   */
+  async stopWatcher(timeoutMs = 8000): Promise<boolean> {
+    await mkdir(this.bridgeDir, { recursive: true });
+    const sentinel = join(this.bridgeDir, 'shutdown');
+    await writeFile(sentinel, '', 'utf-8');
+    const start = Date.now();
+    let stopped = false;
+    while (Date.now() - start < timeoutMs) {
+      if (!(await this.isWatcherAlive())) {
+        stopped = true;
+        break;
+      }
+      await sleep(400);
+    }
+    // Clean up the sentinel either way (the watcher removes it on stop; remove any leftover
+    // so it doesn't immediately kill a watcher the user restarts).
+    try {
+      if (existsSync(sentinel)) await unlink(sentinel);
+    } catch {
+      // best-effort
+    }
+    return stopped;
   }
 
   /** Reap leftovers from dead sessions in both commands/ and results/. Returns count. */
