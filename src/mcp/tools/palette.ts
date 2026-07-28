@@ -74,6 +74,9 @@ export const applyPalette: ToolDef = {
       };
     }
     const newImageId = (args.newImageId as string | undefined) ?? `${palette.id}_result`;
+    // Image-generating PixelMath must executeOn a target view (global execution is refused);
+    // a channel view supplies the output geometry.
+    const geomView = ch.Ha ?? ch.OIII ?? ch.SII;
     const res = await backend.send('run_process', 'PixelMath', {
       processId: 'PixelMath',
       settings: {
@@ -84,7 +87,7 @@ export const applyPalette: ToolDef = {
         createNewImage: true,
         newImageId,
       },
-    });
+    }, { targetView: geomView });
     const out = toToolResult(res);
     if (!out.isError) {
       out.content.push({

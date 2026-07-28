@@ -18,7 +18,7 @@ const textOf = (r: ToolResult): string => (r.content ?? []).map((c) => ('text' i
 
 /** Linked-stretch (color-calibrated) or unlinked (uncalibrated) with a chosen background
  *  target, then a saturation boost and green-cast removal. Returns a run_script code string. */
-function finishScript(viewId: string, backgroundTarget: number, saturation: number, unlinked: boolean): string {
+function finishScript(viewId: string, backgroundTarget: number, saturation: number, unlinked: boolean, applyScnr: boolean): string {
   const midY = (0.5 + 0.25 * Math.max(0, Math.min(1, saturation))).toFixed(3); // sat 0→0.5(none) .. 1→0.75
   const B = Math.max(0.03, Math.min(0.3, backgroundTarget)).toFixed(3);
   const linkedRows = unlinked
@@ -30,7 +30,7 @@ function finishScript(viewId: string, backgroundTarget: number, saturation: numb
   function MTF(m,x){ if(x<=0)return 0; if(x>=1)return 1; return ((m-1)*x)/(((2*m-1)*x)-m); }
   var H=new HistogramTransformation; ${linkedRows} H.executeOn(v); img.resetSelections();
   try{ var Cs=new CurvesTransformation; Cs.S=[[0,0],[0.5,${midY}],[1,1]]; Cs.executeOn(v); }catch(e){}
-  try{ var sc=new SCNR; sc.amount=0.75; sc.executeOn(v); }catch(e){}
+  ${applyScnr ? 'try{ var sc=new SCNR; sc.amount=0.75; sc.executeOn(v); }catch(e){}' : '/* SCNR skipped: green carries Ha in palettes */'}
   return JSON.stringify({ok:true});
 })()`;
 }
@@ -116,11 +116,13 @@ export const processOsc: ToolDef = {
       await run('NXT(OIII)', proc('NoiseXTerminator', oiiiId));
       const pal = (args.palette as string) ?? 'HOO';
       if (pal === 'natural') return jsonResult({ ok: false, steps, error: 'natural palette is broadband-only' });
-      const combined = `${pal}_result`;
+      // PixInsight view ids allow only [A-Za-z0-9_] and can't start with a digit, so "synthetic-SHO"
+      // must be sanitized or the created view id won't match what we later look up.
+      const combined = `${pal.replace(/[^A-Za-z0-9_]/g, '_')}_result`;
       const ap = await run(`apply_palette:${pal}`, applyPalette.handler(backend, { palette: pal, ha: haId, oiii: oiiiId, newImageId: combined }));
       if (isErr(ap)) return jsonResult({ ok: false, steps, error: `palette ${pal} failed` });
       colorView = combined;
-      unlinked = false; // palette output is already channel-assigned; a linked stretch preserves it
+      unlinked = true; // narrowband palettes carry a strong cast; a per-channel stretch neutralizes it
     }
 
     // 4) Star handling (split before stretch when reducing/removing)
@@ -132,7 +134,7 @@ export const processOsc: ToolDef = {
 
     // 5) Stretch + saturation + SCNR on the (starless, if split) nebula
     await run('stretch+saturation', backend.send('run_script', 'run_script', {
-      code: finishScript(colorView, backgroundTarget, saturation, unlinked),
+      code: finishScript(colorView, backgroundTarget, saturation, unlinked, dataType === 'broadband'),
     }).then((br) => ({ content: [{ type: 'text' as const, text: JSON.stringify(br.outputs ?? br.error ?? {}) }], isError: br.status === 'error' })));
 
     // 6) Recombine stars for 'reduce' (dim + screen); 'starless' leaves them off

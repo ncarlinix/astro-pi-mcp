@@ -26,16 +26,18 @@ export const extractDuoband: ToolDef = {
     const haId = `${viewId}_Ha`;
     const oiiiId = `${viewId}_OIII`;
 
+    // Image-generating PixelMath must executeOn a target view (global execution is refused by
+    // PixInsight); the source view supplies geometry even though output goes to a new image.
     const haRes = await backend.send('run_process', 'PixelMath', {
       processId: 'PixelMath',
       settings: { expression: ex.Ha, useSingleExpression: true, createNewImage: true, newImageId: haId },
-    });
+    }, { targetView: viewId });
     if (haRes.status === 'error') return toToolResult(haRes);
 
     const oiiiRes = await backend.send('run_process', 'PixelMath', {
       processId: 'PixelMath',
       settings: { expression: ex.OIII, useSingleExpression: true, createNewImage: true, newImageId: oiiiId },
-    });
+    }, { targetView: viewId });
     if (oiiiRes.status === 'error') return toToolResult(oiiiRes);
 
     return {
