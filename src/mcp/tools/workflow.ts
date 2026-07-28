@@ -53,6 +53,27 @@ function stretchMonoScript(ids: string[], backgroundTarget: number): string {
   })()`;
 }
 
+/** SHARED-transform stretch: compute an auto-stretch from Ha (the dominant line) and apply the
+ *  SAME HistogramTransformation to both channels, PRESERVING the true Ha:OIII ratio. Used for
+ *  extended/Ha-dominant targets so the red isn't washed out (unlike per-channel equalization). */
+function stretchSharedScript(haId: string, oiiiId: string, backgroundTarget: number): string {
+  const B = Math.max(0.03, Math.min(0.3, backgroundTarget)).toFixed(3);
+  return `(function(){
+    function MTF(m,x){ if(x<=0)return 0; if(x>=1)return 1; return ((m-1)*x)/(((2*m-1)*x)-m); }
+    var ha=View.viewById(${JSON.stringify(haId)}), oi=View.viewById(${JSON.stringify(oiiiId)});
+    if(ha.isNull||oi.isNull) return JSON.stringify({error:"channel missing"});
+    var img=ha.image; img.resetSelections(); var md=img.median(), mn=img.MAD()*1.4826; var c0=md-2.8*mn; if(c0<0)c0=0; var xx=md-c0; if(xx<0)xx=0; var m=MTF(${B},xx); img.resetSelections();
+    var H=new HistogramTransformation; H.H=[[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[c0,m,1,0,1],[0,0.5,1,0,1]];
+    H.executeOn(ha); H.executeOn(oi);
+    return JSON.stringify({ok:true});
+  })()`;
+}
+
+/** Rename an open view's id (used to prefix the final result with final_). */
+function renameScript(fromId: string, toId: string): string {
+  return `(function(){var ws=ImageWindow.windows;for(var i=0;i<ws.length;i++){if(ws[i].mainView.id===${JSON.stringify(fromId)}){try{ws[i].mainView.id=${JSON.stringify(toId)};}catch(e){return JSON.stringify({error:String(e)});}return JSON.stringify({renamed:ws[i].mainView.id});}}return JSON.stringify({error:"view not found"});})()`;
+}
+
 /** Saturation-only finish for the duoband path (channels are already stretched before combine). */
 function saturateScript(viewId: string, saturation: number): string {
   const midY = (0.5 + 0.25 * Math.max(0, Math.min(1, saturation))).toFixed(3);
@@ -88,6 +109,14 @@ export const processOsc: ToolDef = {
       .optional()
       .describe('duoband: HOO (default), foraxx (dynamic), or synthetic-SHO (artistic). Ignored for broadband.'),
     starHandling: z.enum(['keep', 'reduce', 'starless']).optional().describe('Default keep'),
+    coverage: z
+      .enum(['compact', 'extended'])
+      .optional()
+      .describe(
+        'duoband nebula size. compact (default, e.g. Helix): equalize channels + aggressive ' +
+        'ABE/BN flatten. extended (frame-filling, Ha-dominant, e.g. Dragons of Ara): preserve ' +
+        'Ha:OIII ratio (shared stretch, no LinearFit) + gentle GC + SCNR (no ABE/BN, which need sky).',
+      ),
     saturation: z.number().min(0).max(1).optional().describe('Saturation boost 0..1 (default 0.5)'),
     backgroundTarget: z.number().min(0.03).max(0.3).optional().describe('Stretch background level (default 0.10)'),
     solve: z.boolean().optional().describe('Plate solve first (default true)'),
@@ -152,24 +181,33 @@ export const processOsc: ToolDef = {
       await run('BXT(OIII)', proc('BlurXTerminator', oiiiId));
       await run('NXT(Ha)', proc('NoiseXTerminator', haId));
       await run('NXT(OIII)', proc('NoiseXTerminator', oiiiId));
-      await run('LinearFit OIII->Ha', proc('LinearFit', oiiiId, { referenceViewId: haId }));
-      await run('stretch channels', toTR(backend.send('run_script', 'run_script', { code: stretchMonoScript([haId, oiiiId], backgroundTarget) })));
       let pal = (args.palette as string) ?? 'HOO';
       if (pal === 'natural') pal = 'HOO'; // HOO is the natural duoband palette
-      // PixInsight view ids allow only [A-Za-z0-9_] and can't start with a digit, so "synthetic-SHO"
-      // must be sanitized or the created view id won't match what we later look up.
-      const combined = `${pal.replace(/[^A-Za-z0-9_]/g, '_')}_result`;
-      const ap = await run(`apply_palette:${pal}`, applyPalette.handler(backend, { palette: pal, ha: haId, oiii: oiiiId, newImageId: combined }));
-      if (isErr(ap)) return jsonResult({ ok: false, steps, error: `palette ${pal} failed` });
-      // Final background flatten. The residual after per-channel GC is WAVY/non-linear (bright
-      // edges, darker center — vignette/illumination residual), which plane-based correctors
-      // (GradientCorrection, ABE deg1) can't model. ABE degree 4 fits that curved surface; then
-      // BackgroundNeutralization removes the slight blue-green cast so saturation doesn't amplify
-      // it into visible color mottling. Both on the compact-nebula frame, so samples stay on sky.
-      await run('ABE deg4 flatten', proc('AutomaticBackgroundExtractor', combined, {
-        polyDegree: 4, targetCorrection: 1, replaceTarget: true, discardModel: true,
-      }));
-      await run('BackgroundNeutralization', proc('BackgroundNeutralization', combined));
+      const palId = pal.replace(/[^A-Za-z0-9_]/g, '_'); // view ids allow only [A-Za-z0-9_]
+      const combined = `final_${palId}`;
+      const coverage = (args.coverage as string) ?? 'compact';
+
+      if (coverage === 'extended') {
+        // Frame-filling / Ha-dominant (e.g. Dragons of Ara): PRESERVE the Ha:OIII ratio so the red
+        // isn't washed to gray. No LinearFit (it scales weak OIII up to Ha). Shared stretch, and
+        // SCNR instead of ABE/BN — the frame has no clean sky region for those.
+        await run('shared stretch (preserve ratio)', toTR(backend.send('run_script', 'run_script', { code: stretchSharedScript(haId, oiiiId, backgroundTarget) })));
+        const ap = await run(`apply_palette:${pal}`, applyPalette.handler(backend, { palette: pal, ha: haId, oiii: oiiiId, newImageId: combined }));
+        if (isErr(ap)) return jsonResult({ ok: false, steps, error: `palette ${pal} failed` });
+        await run('SCNR (green)', proc('SCNR', combined));
+      } else {
+        // Compact (e.g. Helix): equalize channels (LinearFit + per-channel stretch) then flatten
+        // aggressively (ABE deg4 fits the wavy residual; BN removes the cast) — valid because the
+        // frame is mostly sky.
+        await run('LinearFit OIII->Ha', proc('LinearFit', oiiiId, { referenceViewId: haId }));
+        await run('per-channel stretch', toTR(backend.send('run_script', 'run_script', { code: stretchMonoScript([haId, oiiiId], backgroundTarget) })));
+        const ap = await run(`apply_palette:${pal}`, applyPalette.handler(backend, { palette: pal, ha: haId, oiii: oiiiId, newImageId: combined }));
+        if (isErr(ap)) return jsonResult({ ok: false, steps, error: `palette ${pal} failed` });
+        await run('ABE deg4 flatten', proc('AutomaticBackgroundExtractor', combined, {
+          polyDegree: 4, targetCorrection: 1, replaceTarget: true, discardModel: true,
+        }));
+        await run('BackgroundNeutralization', proc('BackgroundNeutralization', combined));
+      }
       colorView = combined;
       preStretched = true; // channels were already stretched before combine
     }
@@ -198,6 +236,13 @@ export const processOsc: ToolDef = {
       })()`;
       await run('recombine stars (dimmed)', backend.send('run_script', 'run_script', { code: recombine })
         .then((br) => ({ content: [{ type: 'text' as const, text: '' }], isError: br.status === 'error' })));
+    }
+
+    // 7) Prefix the final result with final_ (duoband already named final_<pal>; broadband result
+    //    is the processed working view, so rename it here).
+    if (dataType === 'broadband') {
+      const rn = await run('name final', toTR(backend.send('run_script', 'run_script', { code: renameScript(colorView, 'final_natural') })));
+      if (!isErr(rn)) colorView = 'final_natural';
     }
 
     return jsonResult({
