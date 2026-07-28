@@ -40,11 +40,15 @@ function classifyLinearity(lumMedian: number | null): { linear: boolean | null; 
   return { linear: null, label: 'ambiguous (weakly stretched or bright field)', confidence: 'low' };
 }
 
+// Thresholds apply to a LINEAR-domain gradient signal (% of center). A stretch compresses the
+// background toward black and amplifies small ramps ~10x, so a linear gradient of only ~1-2%
+// becomes a prominent visible gradient after stretching. The "negligible" bar is therefore
+// deliberately tight — anything above it should get GradientCorrection/ABE before SPCC.
 function gradientLabel(pct: number | null): string {
   if (pct === null) return 'unknown';
-  if (pct < 3) return 'none/negligible';
-  if (pct < 10) return 'mild';
-  if (pct < 25) return 'moderate';
+  if (pct < 0.8) return 'none/negligible';
+  if (pct < 2.5) return 'mild';
+  if (pct < 6) return 'moderate';
   return 'strong';
 }
 
@@ -122,12 +126,28 @@ export const analyzeImage: ToolDef = {
       };
     });
 
-    // Gradient severity = worst per-channel corner-spread % of center.
-    const gradChannels = (gradient?.channels as Array<{ cornerSpreadPctOfCenter?: unknown }> | undefined) ?? [];
-    const worstGradient = gradChannels.reduce<number | null>((acc, c) => {
+    // Gradient severity = worst per-channel linear-gradient signal, taken as the LARGER of the
+    // least-squares plane amplitude and the corner spread. Plane amplitude catches a smooth
+    // ramp (e.g. left→right) that corner-spread can under-report; corner spread catches
+    // localized/irregular gradients the plane fit averages out. Measured on linear data.
+    const gradChannels =
+      (gradient?.channels as
+        | Array<{ cornerSpreadPctOfCenter?: unknown; planeAmplitudePctOfCenter?: unknown }>
+        | undefined) ?? [];
+    const worstCornerSpread = gradChannels.reduce<number | null>((acc, c) => {
       const p = num(c.cornerSpreadPctOfCenter);
       return p === null ? acc : acc === null ? p : Math.max(acc, p);
     }, null);
+    const worstPlaneAmplitude = gradChannels.reduce<number | null>((acc, c) => {
+      const p = num(c.planeAmplitudePctOfCenter);
+      return p === null ? acc : acc === null ? p : Math.max(acc, p);
+    }, null);
+    const worstGradient =
+      worstCornerSpread === null
+        ? worstPlaneAmplitude
+        : worstPlaneAmplitude === null
+          ? worstCornerSpread
+          : Math.max(worstCornerSpread, worstPlaneAmplitude);
 
     // Color balance: R:G:B median ratios normalised to G.
     let colorBalance: Record<string, number | null> | null = null;
@@ -154,7 +174,13 @@ export const analyzeImage: ToolDef = {
         luminanceMedian: lumMedian,
       },
       snrByChannel: snr,
-      gradient: { worstCornerSpreadPctOfCenter: worstGradient, severity: gradientLabel(worstGradient) },
+      gradient: {
+        worstGradientPctOfCenter: worstGradient,
+        worstCornerSpreadPctOfCenter: worstCornerSpread,
+        worstPlaneAmplitudePctOfCenter: worstPlaneAmplitude,
+        severity: gradientLabel(worstGradient),
+        note: 'linear-domain; stretching amplifies gradients ~10x. Anything above "none/negligible" → run GradientCorrection/ABE before SPCC.',
+      },
       colorBalance,
       neutrality: neutrality
         ? { spreadPct: num(neutrality.spreadPct), neutral: num(neutrality.spreadPct) !== null ? num(neutrality.spreadPct)! <= 1 : null }

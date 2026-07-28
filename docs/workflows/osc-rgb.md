@@ -39,6 +39,7 @@ DynamicCrop → BXT (Correct Only) → ImageSolver (plate solve) → SPFC → MG
 - MGC errors "target image lacks flux calibration metadata" without it (verified tool behavior).
 
 ## 5. MGC + MARS DR2 (gradient) · Medium · Consensus works / contested "best"
+- **⚠ Do NOT skip this step on a low `analyze_image` gradient reading.** Gradient is measured on LINEAR data, where a smooth ramp of only ~1-2% of the background becomes a prominent gradient after stretching (~10x amplification). Judge on `worstGradientPctOfCenter` (plane amplitude + corner spread), not corner spread alone — a left→right ramp barely moves corner-spread but shows up in the plane fit. **Anything above "none/negligible" → run gradient correction here, before SPCC** (a gradient also biases SPCC's background neutralization). When uncertain, run `GradientCorrection` — it's low-risk on already-flat data.
 - **Goal:** remove gradients by comparing your flux-calibrated frame to the real MARS sky survey, not inferring from the image.
 - **Settings (defaults then tune, single-source Stirling guidance):** MARS DB = **DR2** (~1.35 GB, v1.1.1, 1 Aug 2025; drop-in over DR1). Gradient Scale 256 (reaches corners; try 1024 on clean wide data). Structure Separation 3 (drop to 2/1 to reach corners). Model Smoothness 1.00 (raise 3-5 if wavy). Goal: model contains only gradient, not target.
 - **Objectively better (one respect):** signal preservation, won't eat faint IFN/nebulosity like image-only models (ABE/DBE/GraXpert).

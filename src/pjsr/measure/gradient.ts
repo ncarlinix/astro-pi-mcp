@@ -60,12 +60,17 @@ export function gradientScript(viewId: string, gridSize: number, boxFraction: nu
     }
     var center = centerMeds[c], denom = Math.max(Math.abs(center), 1e-9);
     var cornerSpread = corners.length ? Math.max.apply(null, corners) - Math.min.apply(null, corners) : null;
+    // Plane amplitude = total ramp across the (unit-normalized) frame along the gradient
+    // direction = |(bx, by)|. This is the direct linear-gradient signal; corner spread can
+    // miss a smooth ramp or be skewed by a single noisy corner. Reported as % of center.
+    var planeAmp = plane ? Math.sqrt(plane.bx*plane.bx + plane.by*plane.by) : null;
     channels.push({
       channel: c, name: names[c] || ("C"+c),
       centerMedian: sig(center),
       cornerMedians: corners.map(sig),
       cornerSpread: sig(cornerSpread),
       cornerSpreadPctOfCenter: sig(cornerSpread === null ? null : 100*cornerSpread/denom),
+      planeAmplitudePctOfCenter: sig(planeAmp === null ? null : 100*planeAmp/denom),
       maxDeviationPct: sig(100*Math.max(maxM - center, center - minM)/denom),
       plane: plane
     });

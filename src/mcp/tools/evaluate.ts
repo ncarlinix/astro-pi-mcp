@@ -43,16 +43,22 @@ export const evaluateImage: ToolDef = {
 
     const issues: Issue[] = [];
 
-    // Gradient
+    // Gradient — worst of plane-fit amplitude (smooth ramps) and corner spread (localized).
+    // On linear data even a ~1-2% ramp becomes prominent after stretch, so the "clean" bar is
+    // tight; plane amplitude catches left→right ramps that corner-spread alone under-reports.
     if ('data' in grad) {
-      const chans = (grad.data.channels as Array<{ cornerSpreadPctOfCenter?: unknown }>) ?? [];
-      const worst = chans.reduce<number>((a, c) => Math.max(a, num(c.cornerSpreadPctOfCenter) ?? 0), 0);
-      const score = worst < 3 ? 10 : worst < 10 ? 7 : worst < 25 ? 4 : 2;
+      const chans =
+        (grad.data.channels as Array<{ cornerSpreadPctOfCenter?: unknown; planeAmplitudePctOfCenter?: unknown }>) ?? [];
+      const worst = chans.reduce<number>(
+        (a, c) => Math.max(a, num(c.cornerSpreadPctOfCenter) ?? 0, num(c.planeAmplitudePctOfCenter) ?? 0),
+        0,
+      );
+      const score = worst < 0.8 ? 10 : worst < 2.5 ? 7 : worst < 6 ? 4 : 2;
       issues.push({
         aspect: 'gradient',
         score,
-        finding: `worst corner-spread ${worst.toFixed(1)}% of center`,
-        improve: worst < 3 ? 'None needed.' : 'Run DBE (or ABE degree 1) / gradient correction; MGC if plate-solved.',
+        finding: `worst gradient ${worst.toFixed(2)}% of center (plane-fit / corner-spread, linear domain)`,
+        improve: worst < 0.8 ? 'None needed.' : 'Run GradientCorrection (or ABE degree 1) / MGC if plate-solved — before SPCC.',
       });
     }
 
