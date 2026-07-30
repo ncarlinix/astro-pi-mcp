@@ -42,7 +42,10 @@ var WATCHER_VERSION = "0.0.1";
 // rev 5: shutdown latch — the shutdown file / Ctrl+F11 now reliably stops the watcher. The
 //        previous inner-loop break only exited the sleep loop while shouldShutdown() had
 //        already consumed the file, so the watcher polled on forever and locked the UI.
-var WATCHER_REVISION = 5;
+// rev 6: run_process no longer generates undo/swap history by default (executeOn(view,false)) —
+//        the previous default retained a full-res undo snapshot per step, leaking GBs of RAM on
+//        automated pipelines. Pass keepHistory:true to opt back into undo/redo for a step.
+var WATCHER_REVISION = 6;
 
 // Commands older than this are refused (dead-session leftovers). Matches the client's
 // stale threshold so a queued save/close never fires late with surprising side effects.
@@ -283,12 +286,18 @@ function handleRunProcess( command ) {
       }
    }
 
+   // Undo/swap history: executeOn(view, swapFile) keeps a FULL-RES undo snapshot when swapFile is
+   // true (the default). For automated pipelines that is a massive memory leak — a dozen steps on a
+   // 5496x3672 master retains GBs of undo images. Default to NO history (swapFile=false); callers
+   // that actually want undo/redo can pass keepHistory:true.
+   var keepHistory = (p.keepHistory === true) || (command.keepHistory === true);
+
    // Capture the execute return: PixInsight processes return `false` when they DECLINE
    // silently (e.g. SPCC without a catalog, MGC without MARS coverage). undefined = ran.
    if ( command.targetView ) {
       var view = findViewById( command.targetView );
       if ( !view ) throw new Error( "View not found: " + command.targetView );
-      var executed = P.executeOn( view );
+      var executed = P.executeOn( view, keepHistory );
       var declined = (executed === false);
       return { status: "success", outputs: { processId: processId, applied: applied, executed: !declined },
                message: processId + (declined ? " DECLINED (executeOn returned false, no change applied) on " : " executed on ") + command.targetView +
