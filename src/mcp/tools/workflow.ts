@@ -86,6 +86,20 @@ function closeViewsScript(ids: string[]): string {
   })()`;
 }
 
+/** Close pipeline JUNK windows that pile up across runs: the master's embedded rejection maps
+ *  (integration_rejection_low/high…) that open alongside it, plus any leftover masks / split-star
+ *  windows. Matches by id pattern and NEVER closes the result (keepId) or a plain integration view.
+ *  This bounds per-run window growth (each run otherwise leaves ~2 full-res rejection windows). */
+function closePipelineJunkScript(keepId: string): string {
+  return `(function(){
+    var keep=${JSON.stringify(keepId)};
+    var re=/(_rejection_|_rejection$|rejection_high|rejection_low|_mask$|nebmask|nebboost|_stars$|_Ha$|_OIII$)/i;
+    var ws=ImageWindow.windows, closed=[];
+    for(var i=ws.length-1;i>=0;i--){ var id=ws[i].mainView.id; if(id===keep) continue; if(re.test(id)){ try{ ws[i].forceClose(); closed.push(id); }catch(e){} } }
+    return JSON.stringify({closed:closed});
+  })()`;
+}
+
 /** Rename an open view's id (used to prefix the final result with final_). */
 function renameScript(fromId: string, toId: string): string {
   return `(function(){var ws=ImageWindow.windows;for(var i=0;i<ws.length;i++){if(ws[i].mainView.id===${JSON.stringify(fromId)}){try{ws[i].mainView.id=${JSON.stringify(toId)};}catch(e){return JSON.stringify({error:String(e)});}return JSON.stringify({renamed:ws[i].mainView.id});}}return JSON.stringify({error:"view not found"});})()`;
@@ -181,39 +195,60 @@ function starsRecombineScript(nebViewId: string, starsViewId: string, dim: boole
   })()`;
 }
 
-/** Star REDUCTION on an already-stretched image: split stars off (nonlinear, unscreen=false so
- *  screen(starless,stars)==original), shrink stars with a TOE CURVE — wing/halo values ramp to
- *  black while bright cores stay at IDENTITY (unchanged) — then screen back. Because the curve is
- *  identity above t2, bright star cores return at their ORIGINAL brightness (never dimmed), only
- *  smaller; only faint stars/halos below t2 fade. This avoids the black-point-clip pitfall (which
- *  rescales the whole layer and dims every star). A final SCNR + saturation boost keep star colour.
- *  strength 0..1 → higher toe (more wing removed, smaller stars); cores stay full brightness. */
-function reduceStarsInPlaceScript(viewId: string, strength: number): string {
-  const s = Math.max(0, Math.min(1, strength));
-  const t1 = (0.06 + 0.16 * s).toFixed(3);        // faint-star/wing cutoff: below → black. Higher = FEWER stars (0.06 → 0.22)
-  const t2 = (0.06 + 0.16 * s + 0.20).toFixed(3);  // identity resumes above this: bright cores UNCHANGED
-  const erodeIters = s >= 0.5 ? 2 : 1;             // morphological erosion shrinks star RADII (incl. big cores)
-  const erodeAmt = (0.5 + 0.4 * s).toFixed(3);      // erosion blend 0.5 → 0.9; also wipes tiny stars → fewer
+/** Nebula-only BRIGHTEN + CONTRAST + SATURATION through a RangeSelection mask. Selects the bright
+ *  nebula and protects the dark background, so the sky stays clean/gradient-free while the nebula
+ *  gains brightness, punch and colour. This is the fix for "MTF background is cleanest but the
+ *  nebula isn't bright enough" — boost locally instead of stretching harder globally. boost 0..1
+ *  scales the effect from identity to a strong lift. */
+function nebulaBoostScript(viewId: string, boost: number): string {
+  const b = Math.max(0, Math.min(1, boost));
+  // Interpolate curve node y-values from identity (b=0) toward the validated strong look (b=1).
+  const y15 = (0.15 + b * (0.14 - 0.15)).toFixed(3); // slight toe (contrast)
+  const y40 = (0.40 + b * (0.52 - 0.40)).toFixed(3); // midtone lift
+  const y70 = (0.70 + b * (0.82 - 0.70)).toFixed(3); // upper-mid lift
+  const sat = (0.5 + b * (0.72 - 0.5)).toFixed(3);   // saturation midpoint
   return `(function(){
     var v=View.viewById(${JSON.stringify(viewId)}); if(v.isNull) return JSON.stringify({error:"view not found"});
-    var sx=new StarXTerminator; sx.stars=true; sx.unscreen=false; sx.executeOn(v,false);
-    var starsId=${JSON.stringify(viewId)}+"_stars"; var sw=ImageWindow.windowById(starsId);
-    if(sw.isNull){ var ws=ImageWindow.windows; for(var i=0;i<ws.length;i++){ if(/_stars$/.test(ws[i].mainView.id)){ sw=ws[i]; starsId=ws[i].mainView.id; } } }
-    if(!sw||sw.isNull) return JSON.stringify({error:"stars view not created"});
+    var R=new RangeSelection; R.lowRange=0.10; R.highRange=1.0; R.fuzziness=0.5; R.smoothness=18; R.lightness=true; R.invert=false;
+    R.executeOn(v,false);
+    var ws=ImageWindow.windows; var mw=ws[ws.length-1]; mw.mainView.id="nebboost_tmp";
+    v.window.mask=mw; v.window.maskInverted=false; v.window.maskEnabled=true; v.window.maskVisible=false;
+    try{ var Ck=new CurvesTransformation; Ck.K=[[0,0],[0.15,${y15}],[0.4,${y40}],[0.7,${y70}],[1,1]]; Ck.executeOn(v,false); }catch(e){}
+    try{ var Cs=new CurvesTransformation; Cs.S=[[0,0],[0.5,${sat}],[1,1]]; Cs.executeOn(v,false); }catch(e){}
+    v.window.removeMask(); mw.forceClose();
+    return JSON.stringify({ok:true, boost:${b}});
+  })()`;
+}
+
+/** Star REDUCTION of an ALREADY-SPLIT stars layer (screen-space; caller splits with unscreen=false
+ *  so screen(starless,stars)==original), then screens it back onto the (starless) nebula view. Uses
+ *  a smooth Morphological SELECTION to shrink star radii ROUNDLY (avoids the flat-disk / hard-ring
+ *  artifacts that Erosion + a hard toe curve produce), a SOFT taper to fade faint stars without a
+ *  sharp edge, and SCNR + slight desaturation so cores read white. Closes the stars window after.
+ *  strength 0..1 → stronger shrink + more faint-star removal. */
+function reduceStarsLayerScript(nebViewId: string, starsViewId: string, strength: number): string {
+  const s = Math.max(0, Math.min(1, strength));
+  const selPt = (0.36 - 0.20 * s).toFixed(3);      // selection point <0.5 biases to shrink; lower = smaller stars
+  const iters = s >= 0.85 ? 3 : (s >= 0.4 ? 2 : 1); // morphological iterations
+  const amount = (0.5 + 0.31 * s).toFixed(3);       // 0.5 → 0.81 blend
+  const tp = (0.06 + 0.20 * s).toFixed(3);          // soft-taper knee: faint stars below this fade (smoothly)
+  const tpy = (0.06 + 0.20 * s) * 0.22;             // taper y at the knee (small but non-zero → no hard ring)
+  return `(function(){
+    var neb=View.viewById(${JSON.stringify(nebViewId)}); var sw=ImageWindow.windowById(${JSON.stringify(starsViewId)});
+    if(neb.isNull){ return JSON.stringify({error:"nebula view missing"}); }
+    if(sw.isNull){ var ws=ImageWindow.windows; for(var i=0;i<ws.length;i++){ if(/_stars$/.test(ws[i].mainView.id)) sw=ws[i]; } }
+    if(!sw||sw.isNull) return JSON.stringify({error:"stars view missing"});
     var sv=sw.mainView;
-    // Morphological EROSION shrinks star radii — trims the big cores and wipes the tiniest stars
-    // (fewer stars). Default 3x3 all-ones structure; operator 0 = Erosion. Peaks of big stars stay
-    // bright (plateau center survives), so this reduces SIZE, not core brightness.
-    try{ var M=new MorphologicalTransformation; M.operator=0; M.structureSize=3; M.numberOfIterations=${erodeIters}; M.amount=${erodeAmt}; M.executeOn(sv,false); }catch(e){}
-    // Toe curve: [0,0]→[t1,0] (wings/faint→black), →[t2,t2]→[1,1] (identity: cores keep brightness).
-    try{ var Ct=new CurvesTransformation; Ct.K=[[0,0],[${t1},0],[${t2},${t2}],[1,1]]; Ct.executeOn(sv,false); }catch(e){}
-    // Star colour: strip green, then DESATURATE slightly so bright cores read white (they are full
-    // brightness after the toe curve, so low saturation → white, not grey). S<0.5 = desaturate.
+    // Morphological SELECTION (operator 5): smooth, round shrink of star radii — no flat tops.
+    try{ var M=new MorphologicalTransformation; M.operator=5; M.selectionPoint=${selPt}; M.structureSize=5; M.numberOfIterations=${iters}; M.amount=${amount}; M.executeOn(sv,false); }catch(e){}
+    // Soft taper: fade faint stars/halos smoothly (no hard cutoff → no ring). Bright cores ~identity.
+    try{ var Cf=new CurvesTransformation; Cf.K=[[0,0],[${tp},${tpy.toFixed(3)}],[0.5,0.44],[1,1]]; Cf.executeOn(sv,false); }catch(e){}
+    // Colour: strip green, slight desaturate so bright cores read white.
     try{ var scn=new SCNR; scn.amount=0.8; scn.executeOn(sv,false); }catch(e){}
-    try{ var Cs=new CurvesTransformation; Cs.S=[[0,0],[0.5,0.40],[1,1]]; Cs.executeOn(sv,false); }catch(e){}
-    var PM=new PixelMath; PM.expression="~(~"+${JSON.stringify(viewId)}+" * ~"+starsId+")"; PM.useSingleExpression=true; PM.createNewImage=false; PM.executeOn(v,false);
+    try{ var Cs=new CurvesTransformation; Cs.S=[[0,0],[0.5,0.42],[1,1]]; Cs.executeOn(sv,false); }catch(e){}
+    var PM=new PixelMath; PM.expression="~(~"+${JSON.stringify(nebViewId)}+" * ~"+sw.mainView.id+")"; PM.useSingleExpression=true; PM.createNewImage=false; PM.executeOn(neb,false);
     try{ sw.forceClose(); }catch(e){}
-    return JSON.stringify({ok:true, toe:[${t1},${t2}], strength:${s}});
+    return JSON.stringify({ok:true, selectionPoint:${selPt}, iterations:${iters}, strength:${s}});
   })()`;
 }
 
@@ -278,6 +313,7 @@ export const processOsc: ToolDef = {
     gradientTool: z.enum(['gc', 'none']).optional().describe("Gradient step: 'gc' (default GradientCorrection) or 'none' (skip, e.g. already GraXpert-processed)"),
     backgroundTarget: z.number().min(0.03).max(0.3).optional().describe('Stretch background level (default 0.10). Used by the mtf stretch; ghs auto-tunes from image stats.'),
     backgroundBlack: z.number().min(0).max(1).optional().describe('Deepen the background toward black at the end (broadband). 0=off, 1=hard clip. Default 0.35.'),
+    nebulaBoost: z.number().min(0).max(1).optional().describe('Brighten + contrast + saturate the NEBULA only, via a mask (background stays clean/gradient-free). 0=off, 1=strong. Default 0.6 (broadband).'),
     stretch: z
       .enum(['mtf', 'ghs'])
       .optional()
@@ -319,6 +355,7 @@ export const processOsc: ToolDef = {
     const ghsD = (args.ghsD as number) ?? 8;
     const ghsB = (args.ghsB as number) ?? -1;
     const backgroundBlack = (args.backgroundBlack as number) ?? 0.35;
+    const nebulaBoost = (args.nebulaBoost as number) ?? 0.6;
     const starReduction = (args.starReduction as number) ?? 0.5;
     const solve = args.solve !== false;
     const view = (args.view as string | undefined) ?? undefined;
@@ -344,6 +381,8 @@ export const processOsc: ToolDef = {
     await run('purge stale windows', toTR(backend.send('run_script', 'run_script', {
       code: closeViewsScript(['final_natural', `${workView}_stars`, `${workView}_Ha`, `${workView}_OIII`].filter((id) => id !== workView)),
     })));
+    // Sweep leftover rejection maps / masks / star layers from any prior run (keep the source view).
+    await run('purge pipeline junk', toTR(backend.send('run_script', 'run_script', { code: closePipelineJunkScript(workView) })));
     const gc = { protection: true, protectionThreshold: 0.1, protectionAmount: 0.5, scale: 5, smoothness: 0.4 };
 
     // Adaptive BXT/NXT strength from a quick SNR read (skipStars = fast). Noisier data → stronger
@@ -448,10 +487,25 @@ export const processOsc: ToolDef = {
       await run('finish (mtf)', toTR(backend.send('run_script', 'run_script', { code: finishScript(colorView, backgroundTarget, saturation, unlinked, true, brightness) })));
     }
 
+    // 5a) For 'reduce', split stars AFTER the stretch so the nebula boost (5c) lands ONLY on the
+    //     starless nebula — otherwise the boost brightens stars into flat white clipped disks.
+    //     unscreen=false: layer is nonlinear, so screen(starless,stars) reconstructs the original.
+    let reduceStarsView: string | null = null;
+    if (starHandling === 'reduce') {
+      const sxr = await run('StarXTerminator (reduce split)', proc('StarXTerminator', colorView, { stars: true, unscreen: false }));
+      if (!isErr(sxr)) reduceStarsView = `${colorView}_stars`;
+    }
+
     // 5b) Nebula-only saturation boost through a mask (image is starless here for split-before
     //     modes, so the mask selects nebula and leaves the background neutral).
     if (splitBefore && starsView) {
       await run('nebula mask sat', toTR(backend.send('run_script', 'run_script', { code: nebulaMaskSatScript(colorView, saturation) })));
+    }
+
+    // 5c) Nebula-only brighten + contrast + saturation via a mask (broadband). Punches up the
+    //     nebula locally so the background can stay MTF-clean (no global over-stretch → no gradients).
+    if (dataType === 'broadband' && nebulaBoost > 0) {
+      await run(`nebula boost (${nebulaBoost})`, toTR(backend.send('run_script', 'run_script', { code: nebulaBoostScript(colorView, nebulaBoost) })));
     }
 
     // 6) Recombine the independently-stretched stars for 'separate' (full, tight); 'starless'
@@ -460,10 +514,10 @@ export const processOsc: ToolDef = {
       await run('recombine stars (full)', toTR(backend.send('run_script', 'run_script', { code: starsRecombineScript(colorView, starsView, false) })));
     }
 
-    // 6a) Star REDUCTION (split-after-stretch): split the stretched image, trim star wings + dim,
-    //     then screen back. screen(starless, stars) == original, so stars can only get smaller.
-    if (starHandling === 'reduce') {
-      await run(`reduce stars (${starReduction})`, toTR(backend.send('run_script', 'run_script', { code: reduceStarsInPlaceScript(colorView, starReduction) })));
+    // 6a) Star REDUCTION: smoothly shrink the (already-split) stars layer and screen it back onto
+    //     the boosted starless nebula. screen(starless, stars) == original, so stars only get smaller.
+    if (starHandling === 'reduce' && reduceStarsView) {
+      await run(`reduce stars (${starReduction})`, toTR(backend.send('run_script', 'run_script', { code: reduceStarsLayerScript(colorView, reduceStarsView, starReduction) })));
     }
 
     // 6b) Deepen the background toward true black (broadband; low end only, nebula untouched).
@@ -477,6 +531,9 @@ export const processOsc: ToolDef = {
     if (toClose.length) {
       await run(`close intermediates (${toClose.length})`, toTR(backend.send('run_script', 'run_script', { code: closeViewsScript(toClose) })));
     }
+    // Also sweep pipeline junk (rejection maps that opened with the master, stray masks/star layers)
+    // so full-res windows don't accumulate across runs and exhaust RAM.
+    await run('close pipeline junk', toTR(backend.send('run_script', 'run_script', { code: closePipelineJunkScript(colorView) })));
 
     // 7) Prefix the final result with final_ (duoband already named final_<pal>; broadband result
     //    is the processed working view, so rename it here).
@@ -494,6 +551,7 @@ export const processOsc: ToolDef = {
       backgroundTarget,
       stretch: dataType === 'broadband' ? stretch : 'mtf',
       backgroundBlack: dataType === 'broadband' ? backgroundBlack : 0,
+      nebulaBoost: dataType === 'broadband' ? nebulaBoost : 0,
       saturation,
       colorFallbackUnlinked: unlinked,
       steps,
