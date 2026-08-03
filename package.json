@@ -1,0 +1,53 @@
+{
+  "name": "astropilot-ai",
+  "version": "0.0.1",
+  "description": "An AI copilot for PixInsight and astrophotography — MCP server driving PixInsight via a no-signing PJSR bridge.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "astropilot": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "pjsr",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live": "ASTROPILOT_LIVE=1 vitest run",
+    "lint": "eslint .",
+    "format": "prettier -w .",
+    "setup-bridge": "node -e \"const fs=require('fs'),os=require('os'),p=require('path'),b=p.join(os.homedir(),'.astropilot','bridge');['commands','results','logs'].forEach(d=>fs.mkdirSync(p.join(b,d),{recursive:true}));console.log('bridge ready at',b)\""
+  },
+  "keywords": [
+    "pixinsight",
+    "mcp",
+    "astrophotography",
+    "astropilot",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "eslint": "^9.15.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.16.0",
+    "vitest": "^2.1.0"
+  }
+}

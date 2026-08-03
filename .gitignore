@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.plan/
+*.log
+.DS_Store
+astropilot.config.json
+
+# Personal astro data / large binaries — never commit
+test-data/
+*.xisf
+*.fit
+*.fits
+*.tif
+*.tiff
