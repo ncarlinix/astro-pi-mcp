@@ -24,7 +24,9 @@ export const runVeralux: ToolDef = {
     "takes starless+starmask views — use run_process for it.)",
   inputSchema: {
     view: z.string().optional().describe('View id; omit for the active image'),
-    targetBackground: z.number().min(0.02).max(0.6).optional().describe('Target background level (default 0.2)'),
+    targetBackground: z.number().min(0.02).max(0.6).optional().describe('Target background level (default 0.15; the module default 0.20 tends to look washed out)'),
+    processingMode: z.number().int().min(0).max(1).optional().describe('0 = Ready-to-Use (star-safe expansion + soft clip, for pretty pictures; default), 1 = Scientific (pure stretch, hard clip at 1.0)'),
+    sensorProfile: z.number().int().min(0).optional().describe('Sensor QE-weight profile index (VeraLux Sensor Calibration list; pick the one matching your camera, e.g. ASI294/183/533). Default 0.'),
     logD: z.number().min(0).max(6).optional().describe('Stretch intensity, log of D (default 2)'),
     colorGrip: z.number().min(0).max(3).optional().describe('Colour grip / saturation hold (default 1)'),
     colorConvergence: z.number().min(0).max(10).optional().describe('Colour convergence (default 3.5)'),
@@ -35,7 +37,9 @@ export const runVeralux: ToolDef = {
     const viewId = await resolveViewId(backend, args.view as string | undefined);
     if (!viewId) return noViewResult();
     const settings: Record<string, unknown> = {
-      targetBackground: (args.targetBackground as number | undefined) ?? 0.2,
+      targetBackground: (args.targetBackground as number | undefined) ?? 0.15,
+      processingMode: (args.processingMode as number | undefined) ?? 0,
+      sensorProfile: (args.sensorProfile as number | undefined) ?? 0,
       logD: (args.logD as number | undefined) ?? 2,
       colorGrip: (args.colorGrip as number | undefined) ?? 1,
       colorConvergence: (args.colorConvergence as number | undefined) ?? 3.5,
@@ -44,7 +48,7 @@ export const runVeralux: ToolDef = {
     };
     const res = await backend.send('run_process', 'HyperMetricStretch', { processId: 'HyperMetricStretch', settings }, methodFor(viewId));
     const out = toToolResult(res);
-    if (!out.isError) out.content.push({ type: 'text', text: `VeraLux HyperMetricStretch applied to ${viewId} (targetBackground=${settings.targetBackground}, logD=${settings.logD})` });
+    if (!out.isError) out.content.push({ type: 'text', text: `VeraLux HyperMetricStretch applied to ${viewId} (targetBackground=${settings.targetBackground}, mode=${settings.processingMode === 1 ? 'Scientific' : 'Ready-to-Use'}, sensorProfile=${settings.sensorProfile})` });
     return out;
   },
 };
