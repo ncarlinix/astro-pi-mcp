@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ToolDef, ToolResult } from './types.js';
 import { runScriptJson, resolveViewId, jsonResult, noViewResult } from './util.js';
 import { metadataScript } from '../../pjsr/measure/metadata.js';
+import { resolveDistance, formatLightYears } from '../../astro/simbad.js';
 
 /** Small distance table for common targets (overridable). Keyed by a normalised designation
  *  (letters+digits, upper-case). Extend as needed. */
@@ -172,7 +173,12 @@ export const annotateImage: ToolDef = {
 
     const obj = (o.designation as string) ?? (m.object as string) ?? viewId;
     const key = norm(m.object as string);
-    const distance = (o.distance as string) ?? DISTANCES[key] ?? '—';
+    // Distance: explicit override → curated table → SIMBAD TAP fallback (fail-safe to '—').
+    let distance = (o.distance as string | undefined) ?? DISTANCES[key];
+    if (!distance) {
+      const d = await resolveDistance(String(m.object ?? obj));
+      distance = formatLightYears(d.ly);
+    }
     const focal = m.focalLengthMm as number | undefined;
     const aperture = o.aperture as number | undefined;
     const fRatio = focal && aperture ? ` f/${(focal / aperture).toFixed(1)}` : '';
