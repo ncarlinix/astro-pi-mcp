@@ -581,6 +581,13 @@ function runWatcher() {
    console.noteln( "===========================================" );
    console.show();
 
+   // Arm PixInsight's abort mechanism so the Process Console's abort button and Ctrl+F11
+   // actually set console.abortRequested (consumed by shouldShutdown() below). Abort is
+   // DISABLED by default, so without this abortRequested never flips true and the watcher
+   // could only be stopped via the bridge shutdown file — the "can't stop it from PixInsight"
+   // symptom. With it armed, Ctrl+F11 (or the red abort button) cleanly exits the loop.
+   console.abortEnabled = true;
+
    var SHUTDOWN_FILE = BRIDGE_DIR + "/shutdown";
    // Persistent latch: shouldShutdown() consumes (removes) the shutdown file, but it is called
    // from the inner sleep loops where a `break` only exits the INNER loop. Without a latch the

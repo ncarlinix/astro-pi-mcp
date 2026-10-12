@@ -13,3 +13,6 @@ test-data/
 *.fits
 *.tif
 *.tiff
+
+# local Claude Code permission grants (machine-specific)
+.claude/settings.local.json
