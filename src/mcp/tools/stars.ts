@@ -49,8 +49,8 @@ function recombineScript(starlessId: string, starsId: string, strength: number, 
   const SL = JSON.stringify(starlessId), ST = JSON.stringify(starsId), OUT = JSON.stringify(newId);
   const expr =
     mode === 'add'
-      ? `${SL} + ${strength}*${ST}`
-      : `~(~${SL} * ~(${strength}*${ST}))`;
+      ? `${starlessId} + ${strength}*${starsId}`
+      : `~(~${starlessId} * ~(${strength}*${starsId}))`;
   return `(function(){
   var a=ImageWindow.windowById(${SL}); if(a.isNull) return JSON.stringify({error:"starless not found: "+${SL}});
   var b=ImageWindow.windowById(${ST}); if(b.isNull) return JSON.stringify({error:"stars not found: "+${ST}});
