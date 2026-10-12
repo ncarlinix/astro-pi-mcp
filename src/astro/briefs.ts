@@ -51,6 +51,12 @@ const CATALOG: Record<string, CatalogHit> = {
   NGC6960: { class: 'supernova-remnant' }, NGC6992: { class: 'supernova-remnant' },
 };
 
+export function targetKey(name: string | null | undefined): string {
+  if (!name) return '';
+  const bare = name.toUpperCase().replace(/[\s_-]+/g, '');
+  return normDesignation(COMMON_NAMES[bare] ?? name);
+}
+
 function normDesignation(name: string): string {
   return name.toUpperCase().replace(/[\s_]+/g, '').replace(/^NGC0*/, 'NGC').replace(/^IC0*/, 'IC').replace(/^M0*/, 'M');
 }
