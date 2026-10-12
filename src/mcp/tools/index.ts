@@ -26,6 +26,7 @@ import { qualityTools } from './quality.js';
 import { roiTools } from './roi.js';
 import { annotateTools } from './annotate.js';
 import { starTools } from './stars.js';
+import { detailTools } from './detail.js';
 
 /** Every AstroPilot tool across Stages 3–20 (primitives + understanding + orchestration). */
 export const allTools: ToolDef[] = [
@@ -41,6 +42,7 @@ export const allTools: ToolDef[] = [
   ...roiTools, // S23 subject auto-framing (find_subject_roi)
   ...annotateTools, // S24 LCARS acquisition card (annotate_image)
   ...starTools, // S25 star extract / recombine / reduce (StarXTerminator)
+  ...detailTools, // S26 detail: HDRMT core-taming + LHE local contrast
   ...maskTools, // S9 masks
   ...paletteTools, // S10 palettes
   ...oscTools, // S11 OSC + duoband
