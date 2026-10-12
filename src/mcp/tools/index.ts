@@ -29,6 +29,7 @@ import { starTools } from './stars.js';
 import { detailTools } from './detail.js';
 import { prepCacheTools } from './prepcache.js';
 import { knowledgeStoreTools } from './knowledgestore.js';
+import { scoringTools } from './scoring.js';
 
 /** Every AstroPilot tool across Stages 3–20 (primitives + understanding + orchestration). */
 export const allTools: ToolDef[] = [
@@ -47,6 +48,7 @@ export const allTools: ToolDef[] = [
   ...detailTools, // S26 detail: HDRMT core-taming + LHE local contrast
   ...prepCacheTools, // S27 prep cache status / clear (Phase 4.1)
   ...knowledgeStoreTools, // S28 hierarchical param knowledge store (Phase 4.2)
+  ...scoringTools, // S29 image scoring backbone (Phase 4.4)
   ...maskTools, // S9 masks
   ...paletteTools, // S10 palettes
   ...oscTools, // S11 OSC + duoband
