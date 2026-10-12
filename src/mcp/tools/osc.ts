@@ -30,13 +30,15 @@ export const extractDuoband: ToolDef = {
     // PixInsight); the source view supplies geometry even though output goes to a new image.
     const haRes = await backend.send('run_process', 'PixelMath', {
       processId: 'PixelMath',
-      settings: { expression: ex.Ha, useSingleExpression: true, createNewImage: true, newImageId: haId },
+      // newImageColorSpace: 2 = Grayscale — a single expression on an RGB source otherwise
+      // replicates to 3 channels; force true mono Ha/OIII (matches the tool's contract).
+      settings: { expression: ex.Ha, useSingleExpression: true, createNewImage: true, newImageId: haId, newImageColorSpace: 2 },
     }, { targetView: viewId });
     if (haRes.status === 'error') return toToolResult(haRes);
 
     const oiiiRes = await backend.send('run_process', 'PixelMath', {
       processId: 'PixelMath',
-      settings: { expression: ex.OIII, useSingleExpression: true, createNewImage: true, newImageId: oiiiId },
+      settings: { expression: ex.OIII, useSingleExpression: true, createNewImage: true, newImageId: oiiiId, newImageColorSpace: 2 },
     }, { targetView: viewId });
     if (oiiiRes.status === 'error') return toToolResult(oiiiRes);
 
