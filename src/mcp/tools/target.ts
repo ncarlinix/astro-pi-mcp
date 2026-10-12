@@ -4,6 +4,7 @@ import { runScriptJson, resolveViewId, jsonResult, noViewResult } from './util.j
 import { metadataScript } from '../../pjsr/measure/metadata.js';
 import { starMetricsScript } from '../../pjsr/measure/stars.js';
 import { resolveTarget } from '../../astro/simbad.js';
+import { classifyFilter, classifyObject, buildBrief, type TargetClass } from '../../astro/briefs.js';
 
 export const resolveTargetTool: ToolDef = {
   name: 'resolve_target',
@@ -102,4 +103,44 @@ export const classifyTargetTool: ToolDef = {
   },
 };
 
-export const targetTools: ToolDef[] = [resolveTargetTool, classifyTargetTool];
+
+const TARGET_CLASSES = ['emission-nebula','galaxy','reflection-nebula','planetary-nebula','supernova-remnant','open-cluster','globular-cluster','unknown'] as const;
+
+export const recommendProcessingTool: ToolDef = {
+  name: 'recommend_processing',
+  description:
+    'Turn a target\'s traits into a concrete process_osc recommendation (Phase 4.3): reads the ' +
+    'view\'s OBJECT + FILTER, classifies the object (catalog) and filter (broadband vs dual-band), ' +
+    'and returns ready-to-spread process_osc params plus rationale and things to confirm. ' +
+    'Override "filter", "targetClass", or "dataType" when the header is a bare wheel position or ' +
+    'the catalog misses. Omit "view" for the active image. Read-only.',
+  inputSchema: {
+    view: z.string().optional().describe('View id; omit for the active image'),
+    filter: z.string().optional().describe('Override the FILTER (e.g. "L-eXtreme", "UV/IR") when the header is just a position'),
+    targetClass: z.enum(TARGET_CLASSES).optional().describe('Override the object classification'),
+    dataType: z.enum(['broadband','duoband']).optional().describe('Force broadband/duoband (overrides filter inference)'),
+  },
+  handler: async (backend, args) => {
+    const viewId = await resolveViewId(backend, args.view as string | undefined);
+    if (!viewId) return noViewResult();
+    const metaRes = await runScriptJson(backend, metadataScript(viewId));
+    const meta = 'data' in metaRes ? (metaRes.data.metadata as Record<string, unknown>) : {};
+    const object = (meta?.object as string | undefined) ?? null;
+    const headerFilter = (meta?.filter as string | undefined) ?? null;
+
+    const filterStr = (args.filter as string | undefined) ?? headerFilter;
+    let fr = classifyFilter(filterStr);
+    if (args.dataType) fr = { dataType: args.dataType as 'broadband' | 'duoband', matched: 'override' };
+
+    const cls = (args.targetClass as TargetClass | undefined) ?? classifyObject(object).class;
+    const brief = buildBrief(object, cls, fr);
+    return jsonResult({
+      ...brief,
+      filterSeen: filterStr ?? null,
+      classifiedVia: args.targetClass ? 'override' : classifyObject(object).via,
+      next: `process_osc with: ${JSON.stringify(brief.recommended)}`,
+    });
+  },
+};
+
+export const targetTools: ToolDef[] = [resolveTargetTool, classifyTargetTool, recommendProcessingTool];
