@@ -6,6 +6,8 @@ import { analysisTools } from './analysis.js';
 import { analyzeTools } from './analyze.js';
 import { oscTools } from './osc.js';
 import { paletteTools } from './palette.js';
+import { stat } from 'node:fs/promises';
+import { prepFingerprint, cacheLookup, cacheArtifactPath, cacheStore } from '../../prep/cache.js';
 
 /** Locate a sibling tool by name so this orchestrator reuses the same validated handlers. */
 function findTool(list: ToolDef[], name: string): ToolDef {
@@ -325,6 +327,8 @@ export const processOsc: ToolDef = {
     ghsB: z.number().min(-5).max(15).optional().describe('GHS local intensity b (default -1)'),
     starReduction: z.number().min(0).max(1).optional().describe("Star-shrink strength for starHandling:'reduce' (0=subtle, 1=strong). Default 0.5"),
     solve: z.boolean().optional().describe('Plate solve first (default true)'),
+    cache: z.boolean().optional().describe('Reuse a cached post-NXT linear prep when the same source master + prep params were processed before (broadband only). Default false. See prep_cache_status.'),
+    refresh: z.boolean().optional().describe('With cache:true, ignore any existing cache entry and re-run the prep, then overwrite the cache. Default false.'),
   },
   handler: async (backend: ProcessingBackend, args): Promise<ToolResult> => {
     const steps: string[] = [];
@@ -358,6 +362,8 @@ export const processOsc: ToolDef = {
     const nebulaBoost = (args.nebulaBoost as number) ?? 0.6;
     const starReduction = (args.starReduction as number) ?? 0.5;
     const solve = args.solve !== false;
+    const useCache = args.cache === true;
+    const refresh = args.refresh === true;
     const view = (args.view as string | undefined) ?? undefined;
 
     // 1) Plate solve (WCS lands on the original view via the copy-astrometry fix)
@@ -402,13 +408,52 @@ export const processOsc: ToolDef = {
     const bxt = { sharpen_stars: 0.18, sharpen_nonstellar: bxtNonstellar, auto_nonstellar_psf: true };
     const nxt = { denoise: nxtDenoise, denoise_lf: nxtDenoise, denoise_color: nxtDenoise, denoise_lf_color: nxtDenoise };
 
+    // 4.1 prep cache (opt-in, broadband): fingerprint the source master + prep params; on a hit,
+    // load the cached post-NXT linear image and skip GC/SPCC/BXT/NXT. Fully fail-safe.
+    let prepFp: string | null = null;
+    let prepSourcePath = '';
+    let cacheHit = false;
+    if (useCache && dataType === 'broadband') {
+      try {
+        const probe = await backend.send('run_script', 'run_script', {
+          code: `(function(){var v=View.viewById(${JSON.stringify(workView)});var w=(v&&!v.isNull)?v.window:null;return JSON.stringify({filePath:(w&&!w.isNull)?w.filePath:""});})()`,
+        });
+        const rv = (probe.outputs as { returnValue?: string } | undefined)?.returnValue;
+        prepSourcePath = rv ? (JSON.parse(rv).filePath || '') : '';
+        if (prepSourcePath) {
+          const st = await stat(prepSourcePath);
+          prepFp = prepFingerprint({ sourcePath: prepSourcePath, sizeBytes: st.size, mtimeMs: st.mtimeMs, params: { v: 1, gradientTool, gc, bxt, nxt, spcc: true, solve } });
+          if (!refresh) {
+            const hit = await cacheLookup(prepFp);
+            if (hit) {
+              const op = await run('prep cache HIT (load linear)', toTR(backend.send('open_image', '__internal__', { filePath: hit.file })));
+              if (!isErr(op)) {
+                const m = /"id":\s*"([^"]+)"/.exec(textOf(op));
+                if (m) { workView = m[1]!; colorView = workView; cacheHit = true; }
+              }
+            }
+          }
+        }
+      } catch { /* no cache; fall through to a normal prep */ }
+    }
+
     if (dataType === 'broadband') {
-      // Gradient (linear) → natural color via SPCC → BXT/NXT
-      if (gradientTool !== 'none') await run('GradientCorrection', proc('GradientCorrection', workView, gc));
-      const spcc = await run('SPCC', proc('SpectrophotometricColorCalibration', workView));
-      if (isErr(spcc) || /"executed":\s*false/.test(textOf(spcc))) unlinked = true; // fall back to unlinked stretch
-      await run('BXT', proc('BlurXTerminator', colorView, bxt));
-      await run('NXT', proc('NoiseXTerminator', colorView, nxt));
+      if (!cacheHit) {
+        // Gradient (linear) → natural color via SPCC → BXT/NXT
+        if (gradientTool !== 'none') await run('GradientCorrection', proc('GradientCorrection', workView, gc));
+        const spcc = await run('SPCC', proc('SpectrophotometricColorCalibration', workView));
+        if (isErr(spcc) || /"executed":\s*false/.test(textOf(spcc))) unlinked = true; // fall back to unlinked stretch
+        await run('BXT', proc('BlurXTerminator', colorView, bxt));
+        await run('NXT', proc('NoiseXTerminator', colorView, nxt));
+        // 4.1: cache the post-NXT linear prep for identical future runs (best-effort; never fatal).
+        if (useCache && prepFp) {
+          try {
+            const artifact = await cacheArtifactPath(prepFp);
+            const sv = await run('cache prep (save linear)', toTR(backend.send('save_image', '__internal__', { viewId: colorView, filePath: artifact, overwrite: true })));
+            if (!isErr(sv)) await cacheStore({ fingerprint: prepFp, file: artifact, sourcePath: prepSourcePath });
+          } catch { /* caching is best-effort */ }
+        }
+      }
     } else {
       // Duoband best practice: extract → PER-CHANNEL gradient + noise (gradients transfer on
       // combine) → LinearFit OIII to Ha → stretch each channel → THEN palette-combine (Foraxx
