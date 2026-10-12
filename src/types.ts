@@ -68,4 +68,4 @@ export const DEFAULT_CONFIG: BridgeConfig = {
  * revision as `outputs.watcherRev`; the BridgeClient hard-errors on an older watcher so a
  * stale in-PixInsight script never silently misbehaves. Bump when watcher handlers change.
  */
-export const EXPECTED_WATCHER_REV = 6;
+export const EXPECTED_WATCHER_REV = 7;
