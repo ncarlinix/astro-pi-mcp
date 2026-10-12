@@ -23,6 +23,7 @@ import { sessionTools } from './session.js';
 import { projectTools } from './project.js';
 import { backendTools } from './backends.js';
 import { qualityTools } from './quality.js';
+import { roiTools } from './roi.js';
 
 /** Every AstroPilot tool across Stages 3–20 (primitives + understanding + orchestration). */
 export const allTools: ToolDef[] = [
@@ -35,6 +36,7 @@ export const allTools: ToolDef[] = [
   ...knowledgeTools, // S6/7/13 workflows + guidance + explain
   ...evaluationTools, // S8/15 evaluate_image
   ...qualityTools, // S22 quality gates (verify_result / check_burn)
+  ...roiTools, // S23 subject auto-framing (find_subject_roi)
   ...maskTools, // S9 masks
   ...paletteTools, // S10 palettes
   ...oscTools, // S11 OSC + duoband
