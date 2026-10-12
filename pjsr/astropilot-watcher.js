@@ -45,7 +45,10 @@ var WATCHER_VERSION = "0.0.1";
 // rev 6: run_process no longer generates undo/swap history by default (executeOn(view,false)) —
 //        the previous default retained a full-res undo snapshot per step, leaking GBs of RAM on
 //        automated pipelines. Pass keepHistory:true to opt back into undo/redo for a step.
-var WATCHER_REVISION = 6;
+// rev 7: re-arm console.abortEnabled every poll iteration. Executing a process clears it, so
+//        after the first command the Process Console abort button / Ctrl+F11 went dead until
+//        restart; now abort stays live between commands.
+var WATCHER_REVISION = 7;
 
 // Commands older than this are refused (dead-session leftovers). Matches the client's
 // stale threshold so a queued save/close never fires late with surprising side effects.
@@ -608,6 +611,10 @@ function runWatcher() {
 
    var commandCount = 0;
    for ( ;; ) {
+      // Re-arm abort every iteration: executing a PixInsight process clears
+      // console.abortEnabled, which greys out the Process Console abort button. Re-enabling
+      // at the top of each poll keeps Ctrl+F11 / the red abort button live between commands.
+      console.abortEnabled = true;
       CoreApplication.processEvents();
       if ( shouldShutdown() ) {
          console.warningln( "[AstroPilot] Shutdown requested. Stopping." );
