@@ -32,6 +32,7 @@ import { knowledgeStoreTools } from './knowledgestore.js';
 import { scoringTools } from './scoring.js';
 import { veraluxTools } from './veralux.js';
 import { selfTestTools } from './selftest.js';
+import { nbTools } from './nb.js';
 
 /** Every AstroPilot tool across Stages 3–20 (primitives + understanding + orchestration). */
 export const allTools: ToolDef[] = [
@@ -53,6 +54,7 @@ export const allTools: ToolDef[] = [
   ...scoringTools, // S29 pick_best bracket selector (Phase 4.4)
   ...veraluxTools, // S30 VeraLux HyperMetricStretch (Phase 3.3)
   ...selfTestTools, // S31 self_test health / process-availability check
+  ...nbTools, // S32 continuum_subtract (Phase 3.1)
   ...maskTools, // S9 masks
   ...paletteTools, // S10 palettes
   ...oscTools, // S11 OSC + duoband
