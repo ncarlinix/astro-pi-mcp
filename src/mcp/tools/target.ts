@@ -4,7 +4,8 @@ import { runScriptJson, resolveViewId, jsonResult, noViewResult } from './util.j
 import { metadataScript } from '../../pjsr/measure/metadata.js';
 import { starMetricsScript } from '../../pjsr/measure/stars.js';
 import { resolveTarget } from '../../astro/simbad.js';
-import { classifyFilter, classifyObject, buildBrief, type TargetClass } from '../../astro/briefs.js';
+import { classifyFilter, classifyObject, buildBrief, targetKey, type TargetClass } from '../../astro/briefs.js';
+import { knowledgeResolve } from '../../knowledge/store.js';
 
 export const resolveTargetTool: ToolDef = {
   name: 'resolve_target',
@@ -119,6 +120,7 @@ export const recommendProcessingTool: ToolDef = {
     filter: z.string().optional().describe('Override the FILTER (e.g. "L-eXtreme", "UV/IR") when the header is just a position'),
     targetClass: z.enum(TARGET_CLASSES).optional().describe('Override the object classification'),
     dataType: z.enum(['broadband','duoband']).optional().describe('Force broadband/duoband (overrides filter inference)'),
+    useKnowledge: z.boolean().optional().describe('Layer learned params (knowledge store) over the brief defaults (default true)'),
   },
   handler: async (backend, args) => {
     const viewId = await resolveViewId(backend, args.view as string | undefined);
@@ -134,11 +136,26 @@ export const recommendProcessingTool: ToolDef = {
 
     const cls = (args.targetClass as TargetClass | undefined) ?? classifyObject(object).class;
     const brief = buildBrief(object, cls, fr);
+
+    // Phase 4.2: layer learned params (knowledge store) over the brief defaults, most-specific wins.
+    const useKnowledge = args.useKnowledge !== false;
+    let recommended = brief.recommended;
+    let learned: Record<string, string> | undefined;
+    if (useKnowledge) {
+      const tk = targetKey(object);
+      const k = await knowledgeResolve({ target: tk || undefined, type: cls });
+      if (Object.keys(k.params).length) {
+        recommended = { ...brief.recommended, ...k.params };
+        learned = k.provenance;
+      }
+    }
     return jsonResult({
       ...brief,
+      recommended,
+      learned,
       filterSeen: filterStr ?? null,
       classifiedVia: args.targetClass ? 'override' : classifyObject(object).via,
-      next: `process_osc with: ${JSON.stringify(brief.recommended)}`,
+      next: `process_osc with: ${JSON.stringify(recommended)}`,
     });
   },
 };
