@@ -65,6 +65,7 @@ export const analyzeImage: ToolDef = {
     view: z.string().optional(),
     skipStars: z.boolean().optional().describe('Skip the star-detection scan (faster)'),
     maxStars: z.number().int().min(10).max(1000).optional().describe('Brightest stars to measure (default 150)'),
+    verbose: z.boolean().optional().describe('Include the full FITS/XISF header dump in the report (default false; the summary already extracts the key metadata)'),
   },
   handler: async (backend: ProcessingBackend, args) => {
     const viewId = await resolveViewId(backend, args.view as string | undefined);
@@ -218,7 +219,11 @@ export const analyzeImage: ToolDef = {
       summaryParts.push('Note: >1% saturated pixels in at least one channel.');
     }
 
-    return jsonResult({ summary: summaryParts.join(' '), report });
+    // 1.2 token-frugality: the full header dump is the one large block and the summary already
+    // surfaces the fields that matter — omit it unless verbose is set.
+    const verbose = (args.verbose as boolean | undefined) ?? false;
+    const outReport = verbose ? report : { ...report, metadata: report.metadata ? '(omitted; pass verbose:true for the full header)' : null };
+    return jsonResult({ summary: summaryParts.join(' '), report: outReport });
   },
 };
 
